@@ -81,6 +81,7 @@ async def _run_bot() -> None:
     from digital_mate.llm.client import LLMClient
     from digital_mate.router import IntentRouter
     from digital_mate.memory.database import init_db
+    from digital_mate.memory.database import AsyncConnection as _AsyncConn
     from digital_mate.memory.session import SessionManager
     from digital_mate.memory.brand_profile import BrandProfileManager
     from digital_mate.integrations.notion_client import NotionService
@@ -163,6 +164,25 @@ async def _run_bot() -> None:
     # 6. Run polling with graceful shutdown
     loop = asyncio.get_running_loop()
 
+    # Start background session cleanup task (every 24 hours)
+    async def _session_cleanup_loop(db: _AsyncConn, interval_hours: int = 24) -> None:
+        """Background task that purges expired session data periodically."""
+        while True:
+            await asyncio.sleep(interval_hours * 3600)
+            try:
+                deleted = await SessionManager.cleanup_old_sessions(db)
+                if deleted > 0:
+                    logger.info("Session cleanup: removed %d expired messages", deleted)
+            except Exception as exc:
+                logger.error("Session cleanup failed: %s", exc)
+
+    cleanup_task = asyncio.create_task(_session_cleanup_loop(db))
+    logger.info("Session cleanup task started (interval: 24h)")
+
+    # Start background rate limit counter reset task (every 1 hour)
+    rate_limit_task = asyncio.create_task(bot._rate_limit_cleanup_loop())
+    logger.info("Rate limit cleanup task started (interval: 1h)")
+
     def _shutdown_handler(sig: signal.Signals) -> None:
         logger.info("Received signal %s, shutting down gracefully...", sig.name)
         # The polling will stop on next iteration
@@ -196,6 +216,8 @@ async def _run_bot() -> None:
 
     # Graceful shutdown
     logger.info("Stopping bot...")
+    cleanup_task.cancel()
+    rate_limit_task.cancel()
     await app.updater.stop()
     await app.stop()
     await app.shutdown()

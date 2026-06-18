@@ -6,6 +6,7 @@ and the message handler that routes messages through the IntentRouter.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -34,6 +35,7 @@ from digital_mate.integrations.search import SearchService
 from digital_mate.utils.formatting import split_message, format_calendar_week
 from digital_mate.utils.validators import sanitize_input
 from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult, RateLimitState
+from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +98,16 @@ class DigitalMateBot:
             "analytics": self.analytics_pillar,
         }
 
-        self._rate_limits: dict[int, RateLimitState] = {}
+        self._rate_limits: TTLCache[int, RateLimitState] = TTLCache(maxsize=1000, ttl=3600)
         self.app: Application | None = None
+
+    async def _rate_limit_cleanup_loop(self, interval_hours: int = 1) -> None:
+        """Periodically reset injection counters for all tracked users."""
+        while True:
+            await asyncio.sleep(interval_hours * 3600)
+            for state in list(self._rate_limits.values()):
+                state.reset()
+            logger.debug("Rate limit counters reset for %d users", len(self._rate_limits))
 
     def build_application(self) -> Application:
         """Build and configure the Telegram Application with all handlers.
