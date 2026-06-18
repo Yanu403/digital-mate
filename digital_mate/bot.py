@@ -33,6 +33,7 @@ from digital_mate.integrations.notion_client import NotionService
 from digital_mate.integrations.search import SearchService
 from digital_mate.utils.formatting import split_message, format_calendar_week
 from digital_mate.utils.validators import sanitize_input
+from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult
 
 logger = logging.getLogger(__name__)
 
@@ -297,19 +298,34 @@ class DigitalMateBot:
 
     async def _brand_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Collect brand name."""
-        context.chat_data["brand"]["name"] = sanitize_input(update.message.text, max_len=200)
+        raw = update.message.text
+        guard = input_guard(raw, field="brand_name")
+        if guard.is_blocked:
+            await update.message.reply_text(guard.content)
+            return ASK_NAME
+        context.chat_data["brand"]["name"] = sanitize_brand_field(guard.content, "name")
         await update.message.reply_text("Great! What *industry* are you in?", parse_mode=ParseMode.MARKDOWN)
         return ASK_INDUSTRY
 
     async def _brand_industry(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Collect industry."""
-        context.chat_data["brand"]["industry"] = sanitize_input(update.message.text, max_len=200)
+        raw = update.message.text
+        guard = input_guard(raw, field="brand_industry")
+        if guard.is_blocked:
+            await update.message.reply_text(guard.content)
+            return ASK_INDUSTRY
+        context.chat_data["brand"]["industry"] = sanitize_brand_field(guard.content, "industry")
         await update.message.reply_text("Who's your *target audience*?", parse_mode=ParseMode.MARKDOWN)
         return ASK_AUDIENCE
 
     async def _brand_audience(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Collect target audience."""
-        context.chat_data["brand"]["audience"] = sanitize_input(update.message.text, max_len=500)
+        raw = update.message.text
+        guard = input_guard(raw, field="brand_audience")
+        if guard.is_blocked:
+            await update.message.reply_text(guard.content)
+            return ASK_AUDIENCE
+        context.chat_data["brand"]["audience"] = sanitize_brand_field(guard.content, "audience")
         await update.message.reply_text(
             "What *tone of voice* do you prefer?\n"
             "(e.g., professional yet friendly, casual & fun)",
@@ -319,7 +335,12 @@ class DigitalMateBot:
 
     async def _brand_tone(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Collect tone of voice."""
-        context.chat_data["brand"]["tone"] = sanitize_input(update.message.text, max_len=200)
+        raw = update.message.text
+        guard = input_guard(raw, field="brand_tone")
+        if guard.is_blocked:
+            await update.message.reply_text(guard.content)
+            return ASK_TONE
+        context.chat_data["brand"]["tone"] = sanitize_brand_field(guard.content, "tone")
         await update.message.reply_text("What are your *key products/services*? (comma-separated)", parse_mode=ParseMode.MARKDOWN)
         return ASK_PRODUCTS
 
@@ -420,6 +441,13 @@ class DigitalMateBot:
         if not user_message:
             return
 
+        # Security: check for prompt injection attempts
+        guard = input_guard(user_message, field="message")
+        if guard.is_blocked:
+            logger.warning("Blocked message from chat %d: threat=%s", chat_id, guard.threat_type)
+            await update.message.reply_text(guard.content)
+            return
+
         # Show typing indicator
         await update.message.chat.send_action(ChatAction.TYPING)
 
@@ -452,6 +480,12 @@ class DigitalMateBot:
                     )
                 else:
                     response = "🤔 I'm not sure how to help with that. Try asking about content, strategy, research, or analytics!"
+
+            # Security: check output for prompt leaks
+            out_guard = output_guard(response)
+            if not out_guard.is_safe:
+                logger.warning("Output guard triggered for chat %d: %s", chat_id, out_guard.threat_type)
+                response = out_guard.content
 
             # Save to session context
             await self.session_manager.add_message(chat_id, "user", user_message)
