@@ -83,6 +83,7 @@ class BasePillar(ABC):
             tone=profile.tone,
             products=profile.products,
             hashtags=profile.hashtags,
+            competitors=profile.competitors,
         )
 
     async def _generate_response(
