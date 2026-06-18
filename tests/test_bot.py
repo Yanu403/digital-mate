@@ -542,3 +542,20 @@ class TestEdgeCases:
 
         state = await bot._cmd_cancel(update, ctx)
         assert state == ConversationHandler.END
+
+    @pytest.mark.asyncio
+    async def test_throttled_result_sends_slow_down(self, sample_settings, mock_llm_client) -> None:
+        """When router returns a throttled result, bot should reply with slow-down message."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        # Mock router to return a throttled result
+        bot.router.classify = AsyncMock(
+            return_value=RouterResult(pillar="general", action="unclear", confidence=0.3)
+        )
+        update = _make_update(text="rapid fire message")
+        ctx = _make_context()
+
+        await bot._handle_message(update, ctx)
+
+        update.message.reply_text.assert_called_once()
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Slow down" in reply_text

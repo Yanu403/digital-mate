@@ -60,6 +60,16 @@ class RouterResult:
         """
         return self.pillar == "general"
 
+    @property
+    def is_throttled(self) -> bool:
+        """Check if result was throttled by cooldown.
+
+ Returns:
+            True if this result represents a cooldown-throttled response
+            (general/unclear with low confidence).
+        """
+        return self.pillar == "general" and self.action == "unclear" and self.confidence == 0.3
+
 
 class IntentRouter:
     """LLM-based intent classifier that routes messages to pillars.

@@ -146,3 +146,18 @@ class TestIntentRouter:
         for pillar in VALID_PILLARS:
             assert pillar in VALID_ACTIONS
             assert len(VALID_ACTIONS[pillar]) > 0
+
+
+class TestRouterResultThrottled:
+    """Test RouterResult.is_throttled property."""
+
+    def test_is_throttled_property(self) -> None:
+        """RouterResult.is_throttled is True only for cooldown-style results."""
+        throttled = RouterResult(pillar="general", action="unclear", confidence=0.3)
+        assert throttled.is_throttled is True
+
+        unclear = RouterResult(pillar="general", action="unclear", confidence=0.5)
+        assert unclear.is_throttled is False
+
+        normal = RouterResult(pillar="content", action="caption", confidence=0.8)
+        assert normal.is_throttled is False

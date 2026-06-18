@@ -459,11 +459,16 @@ class DigitalMateBot:
             brand_profile = await self.brand_manager.get(chat_id)
 
             # Classify intent
-            result = await self.router.classify(user_message, ctx)
+            result = await self.router.classify(user_message, ctx, chat_id=chat_id)
             logger.info(
                 "Router: chat=%d pillar=%s action=%s conf=%.2f",
                 chat_id, result.pillar, result.action, result.confidence,
             )
+
+            # Throttle feedback — don't silently ignore rapid messages
+            if result.is_throttled:
+                await update.message.reply_text("⏳ Slow down a bit! Try again in a moment.")
+                return
 
             # Handle general intents directly
             if result.is_general:
