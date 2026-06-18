@@ -45,11 +45,11 @@ class Settings(BaseSettings):
     )
 
     # --- Telegram (required) ---
-    telegram_bot_token: str = ""
+    telegram_bot_token: str = Field(..., min_length=1)
 
     # --- LLM (required) ---
     llm_base_url: str = "https://api.openai.com/v1"
-    llm_api_key: str = ""
+    llm_api_key: str = Field(..., min_length=1)
     llm_model: str = "gpt-4o"
     llm_router_model: str = ""
 

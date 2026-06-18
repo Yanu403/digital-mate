@@ -24,6 +24,7 @@ class AnalyticsPillar(BasePillar):
     """
 
     PILLAR_NAME = "analytics"
+    MAX_RESPONSE_TOKENS = 3072
 
     def __init__(
         self,

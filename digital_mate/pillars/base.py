@@ -24,6 +24,7 @@ class BasePillar(ABC):
     """
 
     PILLAR_NAME: str = ""
+    MAX_RESPONSE_TOKENS: int = 2048
 
     def __init__(
         self,
@@ -115,7 +116,7 @@ class BasePillar(ABC):
         )
 
         try:
-            return await self.llm_client.chat(messages)
+            return await self.llm_client.chat(messages, max_tokens=self.MAX_RESPONSE_TOKENS)
         except LLMError as exc:
             logger.error("LLM error in %s pillar: %s", self.PILLAR_NAME, exc)
             return f"⚠️ Sorry, I encountered an error generating a response. Please try again in a moment.\n\n(Error: {exc})"

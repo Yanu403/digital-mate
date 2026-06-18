@@ -6,6 +6,7 @@ import pytest
 
 from digital_mate.utils.security import (
     GuardResult,
+    RateLimitState,
     input_guard,
     output_guard,
     sanitize_brand_field,
@@ -223,3 +224,43 @@ class TestGuardResult:
         result = GuardResult(is_safe=True, content="suspicious", threat_type="warning", severity=1)
         assert result.is_blocked is False
         assert result.is_safe is True  # Warning still allows through
+
+
+class TestRateLimitState:
+    """Test RateLimitState injection tracking."""
+
+    def test_record_injection_returns_false_below_threshold(self) -> None:
+        """First and second injection attempts should return False."""
+        state = RateLimitState()
+        assert state.record_injection() is False  # count=1
+        assert state.record_injection() is False  # count=2
+
+    def test_record_injection_returns_true_at_threshold(self) -> None:
+        """Third injection attempt should return True (block)."""
+        state = RateLimitState()
+        state.record_injection()  # count=1
+        state.record_injection()  # count=2
+        assert state.record_injection() is True  # count=3
+
+    def test_record_injection_returns_true_above_threshold(self) -> None:
+        """After threshold, all subsequent attempts return True."""
+        state = RateLimitState()
+        for _ in range(3):
+            state.record_injection()
+        assert state.record_injection() is True  # count=4
+
+    def test_reset_clears_counters(self) -> None:
+        """Reset should clear both message_count and injection_count."""
+        state = RateLimitState(message_count=10, injection_count=2)
+        state.reset()
+        assert state.message_count == 0
+        assert state.injection_count == 0
+
+    def test_reset_allows_fresh_attempts(self) -> None:
+        """After reset, injection count starts over."""
+        state = RateLimitState()
+        state.record_injection()
+        state.record_injection()
+        state.reset()
+        # After reset, should be back to False
+        assert state.record_injection() is False

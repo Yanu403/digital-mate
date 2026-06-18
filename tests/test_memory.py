@@ -200,3 +200,61 @@ class TestBrandProfileManager:
         assert isinstance(d, dict)
         assert d["name"] == "TestBrand Coffee"
         assert d["chat_id"] == 123456789
+
+
+class TestSessionCleanup:
+    """Test session expiry / cleanup_old_sessions."""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_old_messages(self, temp_db) -> None:
+        """Messages older than max_age_days should be deleted."""
+        # Insert messages with an old created_at
+        await temp_db.execute(
+            "INSERT INTO sessions (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-10 days'))",
+            (9001, "user", "old message 1"),
+        )
+        await temp_db.execute(
+            "INSERT INTO sessions (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-8 days'))",
+            (9001, "assistant", "old message 2"),
+        )
+        await temp_db.commit()
+
+        count = await SessionManager.cleanup_old_sessions(temp_db, max_age_days=7)
+        assert count == 2
+
+        # Verify they're gone
+        cursor = await temp_db.execute("SELECT COUNT(*) FROM sessions WHERE chat_id = 9001")
+        row = await cursor.fetchone()
+        assert row[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_preserves_recent_messages(self, temp_db) -> None:
+        """Recent messages should NOT be deleted."""
+        # Insert a recent message
+        await temp_db.execute(
+            "INSERT INTO sessions (chat_id, role, content) VALUES (?, ?, ?)",
+            (9002, "user", "recent message"),
+        )
+        # Insert an old message
+        await temp_db.execute(
+            "INSERT INTO sessions (chat_id, role, content, created_at) VALUES (?, ?, ?, datetime('now', '-10 days'))",
+            (9002, "user", "old message"),
+        )
+        await temp_db.commit()
+
+        count = await SessionManager.cleanup_old_sessions(temp_db, max_age_days=7)
+        assert count == 1
+
+        # Recent message should still be there
+        cursor = await temp_db.execute(
+            "SELECT content FROM sessions WHERE chat_id = 9002"
+        )
+        rows = await cursor.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "recent message"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_returns_zero_when_nothing_to_delete(self, temp_db) -> None:
+        """Should return 0 when there are no old messages."""
+        count = await SessionManager.cleanup_old_sessions(temp_db, max_age_days=7)
+        assert count == 0

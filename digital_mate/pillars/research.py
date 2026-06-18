@@ -25,6 +25,7 @@ class ResearchPillar(BasePillar):
     """
 
     PILLAR_NAME = "research"
+    MAX_RESPONSE_TOKENS = 3072
 
     def __init__(
         self,

@@ -23,6 +23,7 @@ class StrategyPillar(BasePillar):
     """
 
     PILLAR_NAME = "strategy"
+    MAX_RESPONSE_TOKENS = 4096
 
     async def handle(
         self,

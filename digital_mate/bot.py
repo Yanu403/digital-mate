@@ -33,7 +33,7 @@ from digital_mate.integrations.notion_client import NotionService
 from digital_mate.integrations.search import SearchService
 from digital_mate.utils.formatting import split_message, format_calendar_week
 from digital_mate.utils.validators import sanitize_input
-from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult
+from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult, RateLimitState
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ class DigitalMateBot:
             "analytics": self.analytics_pillar,
         }
 
+        self._rate_limits: dict[int, RateLimitState] = {}
         self.app: Application | None = None
 
     def build_application(self) -> Application:
@@ -445,7 +446,17 @@ class DigitalMateBot:
         guard = input_guard(user_message, field="message")
         if guard.is_blocked:
             logger.warning("Blocked message from chat %d: threat=%s", chat_id, guard.threat_type)
-            await update.message.reply_text(guard.content)
+            # Track injection attempts per chat and escalate if repeated
+            if chat_id not in self._rate_limits:
+                self._rate_limits[chat_id] = RateLimitState()
+            should_block = self._rate_limits[chat_id].record_injection()
+            if should_block:
+                await update.message.reply_text(
+                    "🚫 Repeated policy violations detected. Your messages are being ignored. "
+                    "Take a break and try again later."
+                )
+            else:
+                await update.message.reply_text(guard.content)
             return
 
         # Show typing indicator

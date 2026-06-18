@@ -113,3 +113,35 @@ class SessionManager:
             raise
         logger.info("Cleared %d messages for chat %d", count, chat_id)
         return count
+
+    @staticmethod
+    async def cleanup_old_sessions(db: AsyncConnection, max_age_days: int = 7) -> int:
+        """Delete session messages older than max_age_days.
+
+        Args:
+            db: Open AsyncConnection.
+            max_age_days: Maximum age of session data in days.
+
+        Returns:
+            Number of deleted messages.
+        """
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE created_at < datetime('now', ? || ' days')",
+            (f'-{max_age_days}',),
+        )
+        row = await cursor.fetchone()
+        count = row[0] if row else 0
+
+        if count > 0:
+            try:
+                await db.execute("BEGIN")
+                await db.execute(
+                    "DELETE FROM sessions WHERE created_at < datetime('now', ? || ' days')",
+                    (f'-{max_age_days}',),
+                )
+                await db.commit()
+                logger.info("Cleaned up %d expired session messages (>%d days)", count, max_age_days)
+            except Exception:
+                await db.rollback()
+                raise
+        return count

@@ -118,3 +118,31 @@ class TestSettings:
             _env_file=None,
         )
         assert s2.tavily_enabled is True
+
+    def test_empty_telegram_bot_token_raises_validation_error(self) -> None:
+        """Empty telegram_bot_token should raise ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(telegram_bot_token="", llm_api_key="test-key", _env_file=None)
+
+    def test_empty_llm_api_key_raises_validation_error(self) -> None:
+        """Empty llm_api_key should raise ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(telegram_bot_token="test-token", llm_api_key="", _env_file=None)
+
+    def test_missing_telegram_bot_token_raises_validation_error(self) -> None:
+        """Omitting telegram_bot_token should raise ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(llm_api_key="test-key", _env_file=None)
+
+    def test_missing_llm_api_key_raises_validation_error(self) -> None:
+        """Omitting llm_api_key should raise ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(telegram_bot_token="test-token", _env_file=None)
