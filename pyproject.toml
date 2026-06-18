@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "digital-mate"
+version = "0.1.0"
+description = "AI-powered Digital Marketing Assistant Telegram bot — content, strategy, research, analytics."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "Yanu403", email = "reazerfreak12@gmail.com"}]
+keywords = ["telegram-bot", "digital-marketing", "ai-assistant", "content-creation", "marketing-automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Communications :: Chat",
+    "Topic :: Office/Business :: Marketing",
+]
+
+[project.scripts]
+digital-mate = "digital_mate.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
