@@ -129,6 +129,10 @@ class AsyncConnection:
         """Commit the current transaction."""
         self._conn.commit()
 
+    async def rollback(self) -> None:
+        """Roll back the current transaction."""
+        self._conn.rollback()
+
     async def close(self) -> None:
         """Close the connection."""
         self._conn.close()

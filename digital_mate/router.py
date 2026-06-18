@@ -1,13 +1,19 @@
 """Intent router for classifying user messages into pillars and actions.
 
 Uses the LLM to classify user intent and route to the appropriate pillar handler.
+Includes TTL caching of classification results and per-user rate limiting
+to reduce unnecessary LLM calls and prevent token abuse.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
+
+from cachetools import TTLCache
 
 from digital_mate.llm.client import LLMClient, LLMError
 from digital_mate.llm.prompts import build_router_messages
@@ -25,6 +31,9 @@ VALID_ACTIONS: dict[str, set[str]] = {
     "analytics": {"report", "kpis", "interpret", "roi", "improve", "other"},
     "general": {"chitchat", "help", "brand", "unclear"},
 }
+
+# Default result returned when cooldown is active and no cache hit
+_COOLDOWN_DEFAULT = None  # Sentinel; built lazily as a RouterResult
 
 
 @dataclass
@@ -57,6 +66,10 @@ class IntentRouter:
 
     Uses a lightweight LLM call with JSON output to classify
     user messages into marketing pillars and specific actions.
+
+    Features:
+    - TTL cache for classification results to avoid redundant LLM calls.
+    - Per-user cooldown to rate-limit rapid successive messages.
     """
 
     def __init__(
@@ -64,6 +77,9 @@ class IntentRouter:
         llm_client: LLMClient,
         language: str = "bilingual",
         bot_name: str = "Digital Mate",
+        cache_ttl: int = 300,
+        cache_maxsize: int = 256,
+        cooldown_seconds: float = 2.0,
     ) -> None:
         """Initialize the intent router.
 
@@ -71,25 +87,57 @@ class IntentRouter:
             llm_client: LLM client for classification.
             language: Language setting.
             bot_name: Bot display name.
+            cache_ttl: TTL in seconds for cached classification results.
+            cache_maxsize: Maximum number of entries in the cache.
+            cooldown_seconds: Minimum interval between LLM calls per user.
         """
         self.llm_client = llm_client
         self.language = language
         self.bot_name = bot_name
+        self._cache: TTLCache[str, RouterResult] = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
+        self._last_call: dict[int, float] = {}
+        self._cooldown_seconds = cooldown_seconds
 
     async def classify(
         self,
         message: str,
         context: list[dict[str, str]] | None = None,
+        chat_id: int | None = None,
     ) -> RouterResult:
         """Classify a user message into pillar and action.
+
+        Checks the cache first, then enforces per-user cooldown before
+        making an LLM call.
 
         Args:
             message: The user's message text.
             context: Optional recent conversation context.
+            chat_id: Optional chat ID for per-user cooldown tracking.
 
         Returns:
             RouterResult with pillar, action, confidence, and language.
         """
+        cache_key = hashlib.sha256(message.encode()).hexdigest()
+
+        # 1. Check cache
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Router cache hit for message hash %s", cache_key[:12])
+            return cached
+
+        # 2. Check per-user cooldown
+        if chat_id is not None:
+            now = time.monotonic()
+            last = self._last_call.get(chat_id)
+            if last is not None and (now - last) < self._cooldown_seconds:
+                logger.debug(
+                    "Router cooldown active for chat %d (%.1fs remaining)",
+                    chat_id,
+                    self._cooldown_seconds - (now - last),
+                )
+                return RouterResult(pillar="general", action="unclear", confidence=0.3)
+
+        # 3. Call LLM
         context = context or []
         messages = build_router_messages(
             user_message=message,
@@ -99,15 +147,22 @@ class IntentRouter:
         )
 
         try:
-            result = await self.llm_client.chat_json(messages)
-            return self._parse_result(result)
+            result_data = await self.llm_client.chat_json(messages)
+            result = self._parse_result(result_data)
         except LLMError as exc:
             logger.error("Router LLM error: %s", exc)
             # Fallback: try keyword-based classification
-            return self._keyword_fallback(message)
+            result = self._keyword_fallback(message)
         except Exception as exc:
             logger.error("Unexpected router error: %s", exc)
-            return RouterResult(pillar="general", action="unclear", confidence=0.3)
+            result = RouterResult(pillar="general", action="unclear", confidence=0.3)
+
+        # Update cache and cooldown timestamp
+        self._cache[cache_key] = result
+        if chat_id is not None:
+            self._last_call[chat_id] = time.monotonic()
+
+        return result
 
     def _parse_result(self, data: dict[str, Any]) -> RouterResult:
         """Parse and validate the LLM JSON response.

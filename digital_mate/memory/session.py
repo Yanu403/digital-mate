@@ -16,6 +16,8 @@ class SessionManager:
     """Manages per-chat conversation context stored in SQLite.
 
     Maintains a sliding window of the most recent messages per chat_id.
+    All write operations use atomic transactions to prevent data
+    inconsistency on crash and protect against concurrent writes.
     """
 
     def __init__(self, db: AsyncConnection, max_turns: int = 10) -> None:
@@ -31,27 +33,34 @@ class SessionManager:
     async def add_message(self, chat_id: int, role: str, content: str) -> None:
         """Add a message to the session context for a chat.
 
+        Inserts the new message and prunes old messages beyond the
+        sliding window in a single atomic transaction.
+
         Args:
             chat_id: Telegram chat ID.
             role: Message role ('user' or 'assistant').
             content: Message text content.
         """
-        await self.db.execute(
-            "INSERT INTO sessions (chat_id, role, content) VALUES (?, ?, ?)",
-            (chat_id, role, content),
-        )
-        await self.db.commit()
+        try:
+            await self.db.execute("BEGIN")
+            await self.db.execute(
+                "INSERT INTO sessions (chat_id, role, content) VALUES (?, ?, ?)",
+                (chat_id, role, content),
+            )
 
-        # Prune old messages beyond max_turns * 2 (user + assistant per turn)
-        max_messages = self.max_turns * 2
-        await self.db.execute(
-            """DELETE FROM sessions WHERE chat_id = ? AND id NOT IN (
-                SELECT id FROM sessions WHERE chat_id = ?
-                ORDER BY id DESC LIMIT ?
-            )""",
-            (chat_id, chat_id, max_messages),
-        )
-        await self.db.commit()
+            # Prune old messages beyond max_turns * 2 (user + assistant per turn)
+            max_messages = self.max_turns * 2
+            await self.db.execute(
+                """DELETE FROM sessions WHERE chat_id = ? AND id NOT IN (
+                    SELECT id FROM sessions WHERE chat_id = ?
+                    ORDER BY id DESC LIMIT ?
+                )""",
+                (chat_id, chat_id, max_messages),
+            )
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         logger.debug("Added %s message for chat %d", role, chat_id)
 
     async def get_context(self, chat_id: int) -> list[dict[str, str]]:
@@ -77,23 +86,30 @@ class SessionManager:
     async def clear(self, chat_id: int) -> int:
         """Clear all session context for a chat.
 
+        Reads the count and deletes in a single atomic transaction.
+
         Args:
             chat_id: Telegram chat ID.
 
         Returns:
             Number of messages deleted.
         """
-        cursor = await self.db.execute(
-            "SELECT COUNT(*) FROM sessions WHERE chat_id = ?",
-            (chat_id,),
-        )
-        row = await cursor.fetchone()
-        count = row[0] if row else 0
+        try:
+            await self.db.execute("BEGIN")
+            cursor = await self.db.execute(
+                "SELECT COUNT(*) FROM sessions WHERE chat_id = ?",
+                (chat_id,),
+            )
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
 
-        await self.db.execute(
-            "DELETE FROM sessions WHERE chat_id = ?",
-            (chat_id,),
-        )
-        await self.db.commit()
+            await self.db.execute(
+                "DELETE FROM sessions WHERE chat_id = ?",
+                (chat_id,),
+            )
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         logger.info("Cleared %d messages for chat %d", count, chat_id)
         return count
