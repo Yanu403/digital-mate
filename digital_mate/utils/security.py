@@ -66,7 +66,7 @@ EXFIL_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(reveal|show|print|output|dump)\s+(your|the)\s+(source|code|implementation)", re.I),
     re.compile(r"(reveal|show|print|output)\s+(your|the)\s+(model|provider|api|endpoint|base.?url)", re.I),
     re.compile(r"(reveal|show|print|output)\s+(the|your)\s+contents?\s+of\s+", re.I),
-    re.compile(r"(what|which)\s+(model|llm|api|provider)(\s+\w+)?\s+(are\s+you|do\s+you\s+use)", re.I),
+    re.compile(r"(?:what|which)\s+(?:model|llm|api|provider)(?:\s+\w+)?\s+(?:are\s+you|do\s+you)(?:\s+\w+)?", re.I),
     re.compile(r"(reveal|show|print)\s+(all\s+)?(instructions|rules|guidelines)\s+(you|that)\s+(were|have|has)", re.I),
 ]
 
@@ -80,6 +80,8 @@ HARMFUL_PATTERNS: list[re.Pattern[str]] = [
 
 # Encoded/obfuscated injection attempts
 OBFUSCATION_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(?:your|the)\s+system\s+prompt", re.I),
+    re.compile(r"(?:your|the)\s+(?:full\s+)?(?:system\s+)?(?:prompt|instruction)s?\s+(?:in|to|as|into)\s+", re.I),
     re.compile(r"(base64|hex|rot13|encode|decode)\s+(your|the)\s+(prompt|instruction)", re.I),
     re.compile(r"(in\s+)?(latin|pig\s+latin|reverse|backwards|mirror)\s*(text|language|mode)?\s*:", re.I),
     re.compile(r"(translate|convert)\s+(your|the)\s+(prompt|instruction)\s+to\s+", re.I),
