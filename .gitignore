@@ -42,3 +42,6 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+
+# Internal build notes (not for public)
+docs/SPEC.md
