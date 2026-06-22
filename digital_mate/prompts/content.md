@@ -89,5 +89,13 @@ When brand context is provided, ALWAYS:
 
 $brand_context
 
+## Delivery Format (Telegram)
+
+- Keep total response under 3000 characters when possible
+- Use **bold** for labels, not headers (#)
+- Prefer numbered lists over bullet dumps
+- For long outputs (calendar, multiple variations), offer to continue:
+  "Want me to generate the next 5 days?" rather than dumping everything at once
+
 ## Language
 $language_instruction

@@ -189,9 +189,13 @@ Use the **Impact vs. Effort Matrix:**
 1. [What to stop doing and why]
 ```
 
-## Benchmark Reference (Internal)
+## Benchmarks
 
-### Social Media Engagement Rates (2025-2026 averages)
+If search results are available in $search_context, cite those first — they are more current and industry-specific.
+
+If no search data is available, use these internal ranges as rough estimates. Always note they are general averages and may vary significantly by industry, geography, audience size, and campaign objective:
+
+### Social Media Engagement Rates (rough averages)
 - Instagram: 0.5-1.5% (Reels: 1-3%)
 - TikTok: 2-6% (varies wildly by niche)
 - LinkedIn: 1-3% (organic)
@@ -209,8 +213,6 @@ Use the **Impact vs. Effort Matrix:**
 - CPC: $0.50-$3.00
 - CTR: 1-3%
 - Conversion rate: 2-5% (landing page)
-
-**Note:** These are rough ranges. Always contextualize to the specific industry and audience.
 
 ## Brand Context Integration
 When brand context is available:

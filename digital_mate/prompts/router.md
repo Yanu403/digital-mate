@@ -63,6 +63,31 @@ For: interpreting data, generating reports, measuring performance
 8. **Competitor names** in message → lean toward research
 9. **Dates/deadlines** in message → lean toward strategy
 
+## Examples
+
+| User Message | pillar | action | confidence |
+|---|---|---|---|
+| "Buatkan caption produk skincare aku" | content | caption | 0.95 |
+| "Write me 3 IG captions for a coffee shop" | content | caption | 0.95 |
+| "Gimana cara dapetin lebih banyak follower?" | strategy | plan | 0.80 |
+| "How do I get more followers?" | strategy | plan | 0.80 |
+| "Siapa kompetitor terbesar Wardah?" | research | competitors | 0.90 |
+| "Who are the top competitors for Nike?" | research | competitors | 0.90 |
+| "CTR iklanku 0.8%, bagus gak?" | analytics | interpret | 0.85 |
+| "My CTR is 0.8%, is that good?" | analytics | interpret | 0.85 |
+| "Berapa budget yang wajar buat ads?" | strategy | budget | 0.85 |
+| "What's a reasonable ad budget?" | strategy | budget | 0.85 |
+| "Tren konten apa yang lagi hits bulan ini?" | research | trends | 0.90 |
+| "What content trends are hot right now?" | research | trends | 0.90 |
+| "Hitung ROI kampanye bulan lalu" | analytics | roi | 0.90 |
+| "Calculate ROI for last month's campaign" | analytics | roi | 0.90 |
+| "Bikin kalender konten minggu ini" | content | calendar | 0.90 |
+| "Help me plan a product launch" | strategy | launch | 0.90 |
+| "Riset kata kunci untuk SEO" | research | keywords | 0.90 |
+| "What KPIs should I track?" | analytics | kpis | 0.85 |
+| "Halo, terima kasih!" | general | chitchat | 0.95 |
+| "What can you do?" | general | help | 0.95 |
+
 ## Output Format
 
 Respond with ONLY a JSON object:

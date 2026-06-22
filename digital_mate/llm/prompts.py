@@ -206,7 +206,13 @@ def build_pillar_messages(
     template = prompt_map.get(pillar, CONTENT_SYSTEM_PROMPT)
     pillar_prompt = Template(template).safe_substitute(
         bot_name=bot_name,
-        brand_context=brand_context or "No brand profile configured. Ask the user to set one up with /brand for better personalization.",
+        brand_context=brand_context or (
+            "## Brand Context\n"
+            "No brand profile configured. Respond with best-practice general advice. "
+            "Do NOT repeatedly ask the user to set up a brand profile — mention it at most "
+            "once per conversation, only if highly relevant. Proceed with the request "
+            "using reasonable assumptions."
+        ),
         language_instruction=lang_instruction,
         search_context=search_context or "",
     )
@@ -215,18 +221,7 @@ def build_pillar_messages(
     system_parts: list[str] = []
 
     if AGENT_DEFINITION:
-        # Add a condensed version of the agent definition as context
-        system_parts.append(
-            "# Who You Are\n\n"
-            "You are Digital Mate — a senior digital marketing specialist. "
-            "You speak with the confidence of someone who has run hundreds of campaigns. "
-            "Direct, practical, no filler. Lead with the answer, then explain why. "
-            "You're bilingual (EN/ID) and match the user's language.\n\n"
-            "**Always:** specific over vague, actionable over theoretical, "
-            "honest about limitations, opinionated with reasoning.\n\n"
-            "**Never:** start with filler phrases, give generic advice, "
-            "fabricate statistics, over-complicate simple requests."
-        )
+        system_parts.append(AGENT_DEFINITION)
 
     system_parts.append(pillar_prompt)
     system = "\n\n---\n\n".join(system_parts)
