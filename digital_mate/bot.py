@@ -15,12 +15,14 @@ from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
     MessageHandler,
     filters,
 )
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from digital_mate.config import Settings
 from digital_mate.llm.client import LLMClient
@@ -38,8 +40,10 @@ from digital_mate.utils.validators import sanitize_input
 from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult, RateLimitState
 from digital_mate.llm.prompts import build_general_messages, build_brand_context
 from digital_mate.memory.autocalendar import AutoCalendarManager, AutoCalendarSubscription
+from digital_mate.memory.response_store import ResponseStore
 from digital_mate.pillars.autocalendar import CalendarGenerator
 from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
+from digital_mate.utils.keyboards import feedback_keyboard
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -65,6 +69,7 @@ class DigitalMateBot:
         notion_service: NotionService | None = None,
         search_service: SearchService | None = None,
         autocalendar_manager: AutoCalendarManager | None = None,
+        response_store: ResponseStore | None = None,
     ) -> None:
         """Initialize the bot with all services.
 
@@ -77,6 +82,8 @@ class DigitalMateBot:
             notion_service: Optional Notion integration.
             search_service: Optional web search service.
             autocalendar_manager: Optional auto-calendar subscription manager.
+            response_store: Optional response store for feedback buttons.
+                When None, feedback buttons are not attached to responses.
         """
         self.settings = settings
         self.llm_client = llm_client
@@ -86,6 +93,7 @@ class DigitalMateBot:
         self.notion_service = notion_service
         self.search_service = search_service
         self.autocalendar_manager = autocalendar_manager
+        self.response_store = response_store
         self._calendar_generator: CalendarGenerator | None = None
         if autocalendar_manager is not None:
             self._calendar_generator = CalendarGenerator(
@@ -169,6 +177,12 @@ class DigitalMateBot:
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message),
             group=2,
+        )
+
+        # Feedback button callback handler (👍/👎/🔄 on pillar responses)
+        self.app.add_handler(
+            CallbackQueryHandler(self._handle_feedback_callback, pattern=r"^fb:"),
+            group=3,
         )
 
         return self.app
@@ -725,6 +739,7 @@ class DigitalMateBot:
                 return
 
             # Handle general intents directly
+            pillar = None
             if result.is_general:
                 response = await self._handle_general(user_message, result, ctx, brand_profile)
             else:
@@ -750,9 +765,39 @@ class DigitalMateBot:
             await self.session_manager.add_message(chat_id, "user", user_message)
             await self.session_manager.add_message(chat_id, "assistant", response)
 
+            # Determine whether to attach feedback buttons.
+            # Only pillar responses (content/strategy/research/analytics) get
+            # feedback buttons — general chitchat/help/brand do not.
+            rstore = self.response_store
+            attach_feedback = (
+                rstore is not None
+                and not result.is_general
+                and pillar is not None
+            )
+
+            # Store the response for feedback/regenerate, if enabled
+            log_id: int | None = None
+            if attach_feedback and rstore is not None:
+                try:
+                    log_id = await rstore.store(
+                        chat_id=chat_id,
+                        pillar=result.pillar,
+                        action=result.action,
+                        user_request=user_message,
+                        response_text=response,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to store response for feedback: %s", exc)
+                    log_id = None
+
             # Send response (split if too long)
-            for chunk in split_message(response):
-                await update.message.reply_text(chunk)
+            chunks = split_message(response)
+            for idx, chunk in enumerate(chunks):
+                is_last = idx == len(chunks) - 1
+                reply_markup = None
+                if attach_feedback and log_id is not None and is_last:
+                    reply_markup = feedback_keyboard(log_id)
+                await update.message.reply_text(chunk, reply_markup=reply_markup)
 
         except Exception as exc:
             logger.error("Error handling message from chat %d: %s", chat_id, exc, exc_info=True)
@@ -841,3 +886,172 @@ class DigitalMateBot:
                 "• Analytics and performance reports\n\n"
                 "Try rephrasing your question or ask me something specific!"
             )
+
+    # -----------------------------------------------------------------------
+    # Feedback button callback handler
+    # -----------------------------------------------------------------------
+
+    async def _handle_feedback_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline feedback button callbacks (👍/👎/🔄).
+
+        Callback data formats (all prefixed with ``fb:``):
+
+        * ``fb:up:{log_id}``    — positive feedback
+        * ``fb:down:{log_id}``  — negative feedback
+        * ``fb:regen:{log_id}`` — regenerate the response
+
+        For 👍/👎 the feedback row is updated, the keyboard is removed, and a
+        brief acknowledgement is shown. For 🔄 the original request is fetched
+        from the store, the pillar is re-invoked, and the message is edited with
+        a fresh response plus a brand-new feedback keyboard.
+        """
+        query = update.callback_query
+        if query is None:
+            # Defensive: CallbackQueryHandler guarantees a callback_query,
+            # but guard regardless so we never raise AttributeError.
+            return
+        await query.answer()
+
+        data = query.data or ""
+        rstore = self.response_store
+        if rstore is None:
+            # Feedback store not configured — nothing we can do
+            await query.edit_message_text(
+                "⚠️ Feedback is not available right now.",
+                reply_markup=None,
+            )
+            return
+
+        # Parse callback data: fb:<action>:<log_id>
+        parts = data.split(":")
+        if len(parts) != 3:
+            logger.warning("Malformed feedback callback data: %s", data)
+            return
+        action, log_id_str = parts[1], parts[2]
+        try:
+            log_id = int(log_id_str)
+        except ValueError:
+            logger.warning("Invalid log_id in feedback callback: %s", log_id_str)
+            return
+
+        if action in ("up", "down"):
+            await self._handle_feedback_rating(query, rstore, log_id, action)
+        elif action == "regen":
+            await self._handle_feedback_regen(query, rstore, log_id)
+        else:
+            logger.warning("Unknown feedback action: %s", action)
+
+    async def _handle_feedback_rating(
+        self,
+        query: Any,
+        rstore: ResponseStore,
+        log_id: int,
+        action: str,
+    ) -> None:
+        """Process a 👍/👎 rating — update DB, remove keyboard, thank the user."""
+        try:
+            await rstore.update_feedback(log_id, action)
+        except Exception as exc:
+            logger.error("Failed to record feedback %s for log %d: %s", action, log_id, exc)
+
+        # Remove the inline keyboard and show a brief thanks
+        emoji = "👍" if action == "up" else "👎"
+        thanks = "Thanks for the feedback! 👍" if action == "up" else "Thanks for the feedback — I'll do better next time. 👎"
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception as exc:
+            logger.debug("Could not remove feedback keyboard: %s", exc)
+        try:
+            await query.message.reply_text(thanks)
+        except Exception as exc:
+            logger.debug("Could not send feedback thanks: %s", exc)
+        logger.info("Feedback %s recorded for log_id=%d", emoji, log_id)
+
+    async def _handle_feedback_regen(
+        self,
+        query: Any,
+        rstore: ResponseStore,
+        log_id: int,
+    ) -> None:
+        """Process a 🔄 regenerate — re-run the pillar and edit the message."""
+        record = await rstore.get(log_id)
+        if record is None:
+            await query.edit_message_text(
+                "⚠️ Sorry, I couldn't find the original response to regenerate.",
+                reply_markup=None,
+            )
+            return
+
+        pillar = self._pillars.get(record.pillar)
+        if pillar is None:
+            await query.edit_message_text(
+                "⚠️ Sorry, that pillar is no longer available.",
+                reply_markup=None,
+            )
+            return
+
+        # Show typing indicator while regenerating
+        try:
+            await query.message.chat.send_action(ChatAction.TYPING)
+        except Exception:
+            pass
+
+        # Re-invoke the pillar with the original request.
+        # Brand profile is fetched fresh so regen respects any profile updates.
+        try:
+            brand_profile = await self.brand_manager.get(record.chat_id)
+            new_response = await pillar.handle(
+                user_message=record.user_request,
+                action=record.action,
+                context=[],  # fresh context for a clean variation
+                brand_profile=brand_profile,
+            )
+        except Exception as exc:
+            logger.error("Regeneration failed for log %d: %s", log_id, exc)
+            await query.message.reply_text(
+                "⚠️ Sorry, I couldn't regenerate that response. Please try again."
+            )
+            return
+
+        # Security: check output for prompt leaks
+        out_guard = output_guard(new_response)
+        if not out_guard.is_safe:
+            logger.warning("Output guard triggered during regen for log %d: %s", log_id, out_guard.threat_type)
+            new_response = out_guard.content
+
+        # Persist the regenerated response and bump the regen counter
+        try:
+            new_log_id = await rstore.store(
+                chat_id=record.chat_id,
+                pillar=record.pillar,
+                action=record.action,
+                user_request=record.user_request,
+                response_text=new_response,
+                regen_count=record.regen_count + 1,
+            )
+        except Exception as exc:
+            logger.warning("Failed to store regenerated response: %s", exc)
+            new_log_id = log_id  # fall back to old keyboard
+
+        # Edit the original message with the new response + fresh keyboard.
+        # If the response is very long, edit_text may fail (Telegram limit),
+        # so fall back to sending a new message.
+        reply_markup = feedback_keyboard(new_log_id) if new_log_id else None
+        prefix = "🔄 *Regenerated response:*\n\n"
+        edited_text = prefix + new_response
+        try:
+            await query.edit_message_text(
+                edited_text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:
+            logger.warning("edit_message_text failed during regen, sending new message: %s", exc)
+            # Fall back: send as a new message (split if needed)
+            for idx, chunk in enumerate(split_message(edited_text)):
+                is_last = idx == len(split_message(edited_text)) - 1
+                await query.message.reply_text(
+                    chunk,
+                    reply_markup=reply_markup if is_last else None,
+                )
+        logger.info("Regenerated response for log_id=%d -> new_log_id=%s", log_id, new_log_id)

@@ -73,9 +73,25 @@ CREATE TABLE IF NOT EXISTS autocalendar_entries (
 
 CREATE INDEX IF NOT EXISTS idx_autocalendar_entries_chat_week
     ON autocalendar_entries(chat_id, week_start);
+
+CREATE TABLE IF NOT EXISTS feedback_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    pillar TEXT NOT NULL,
+    action TEXT NOT NULL DEFAULT '',
+    user_request TEXT NOT NULL DEFAULT '',
+    response_text TEXT NOT NULL DEFAULT '',
+    feedback TEXT,
+    regen_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_log_chat_id ON feedback_log(chat_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_log_created_at ON feedback_log(created_at);
 """
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 class AsyncCursor:
@@ -101,6 +117,15 @@ class AsyncCursor:
             Row count from the cursor.
         """
         return self._cursor.rowcount
+
+    @property
+    def lastrowid(self) -> int | None:
+        """Return the rowid of the last inserted row.
+
+        Returns:
+            The last insert rowid, or None if no insert has occurred.
+        """
+        return self._cursor.lastrowid
 
     async def fetchone(self) -> tuple[Any, ...] | None:
         """Fetch one result row.

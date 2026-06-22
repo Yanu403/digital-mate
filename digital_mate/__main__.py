@@ -85,6 +85,7 @@ async def _run_bot() -> None:
     from digital_mate.memory.session import SessionManager
     from digital_mate.memory.brand_profile import BrandProfileManager
     from digital_mate.memory.autocalendar import AutoCalendarManager
+    from digital_mate.memory.response_store import ResponseStore
     from digital_mate.integrations.notion_client import NotionService
     from digital_mate.integrations.search import SearchService
     from digital_mate.bot import DigitalMateBot
@@ -116,6 +117,8 @@ async def _run_bot() -> None:
     session_manager = SessionManager(db, max_turns=settings.max_conversation_turns)
     brand_manager = BrandProfileManager(db)
     autocalendar_manager = AutoCalendarManager(db)
+    response_store = ResponseStore(db)
+    logger.info("Response store (feedback logging) initialized")
 
     # Optional: Notion integration
     notion_service: NotionService | None = None
@@ -141,6 +144,7 @@ async def _run_bot() -> None:
         notion_service=notion_service,
         search_service=search_service,
         autocalendar_manager=autocalendar_manager,
+        response_store=response_store,
     )
 
     app = bot.build_application()
