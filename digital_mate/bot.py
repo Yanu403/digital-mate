@@ -36,6 +36,7 @@ from digital_mate.integrations.search import SearchService
 from digital_mate.utils.formatting import split_message, format_calendar_week, format_calendar_entry
 from digital_mate.utils.validators import sanitize_input
 from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult, RateLimitState
+from digital_mate.llm.prompts import build_general_messages, build_brand_context
 from digital_mate.memory.autocalendar import AutoCalendarManager, AutoCalendarSubscription
 from digital_mate.pillars.autocalendar import CalendarGenerator
 from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
@@ -768,6 +769,9 @@ class DigitalMateBot:
     ) -> str:
         """Handle general (non-pillar) intents.
 
+        For chitchat and unclear messages, uses the LLM to generate a natural
+        conversational response. For help and brand, returns static text.
+
         Args:
             user_message: User's message.
             result: Router result.
@@ -779,13 +783,7 @@ class DigitalMateBot:
         """
         action = result.action
 
-        if action == "chitchat":
-            return (
-                f"👋 Hey there! I'm {self.settings.bot_name}, your AI Digital Marketing Assistant.\n\n"
-                f"I can help with content creation, marketing strategy, research, and analytics. "
-                f"What would you like to work on?"
-            )
-        elif action == "help":
+        if action == "help":
             return (
                 f"🤖 I'm *{self.settings.bot_name}* — your AI Digital Marketing Assistant!\n\n"
                 f"I help with 4 pillars:\n"
@@ -802,6 +800,37 @@ class DigitalMateBot:
             )
         elif action == "brand":
             return "Use the /brand command to set up or update your brand profile! Just type: /brand"
+        elif action in ("chitchat", "unclear"):
+            # Use LLM for natural conversation
+            brand_ctx = ""
+            if brand_profile:
+                brand_ctx = build_brand_context(
+                    name=brand_profile.name,
+                    industry=brand_profile.industry,
+                    audience=brand_profile.audience,
+                    tone=brand_profile.tone,
+                    products=brand_profile.products,
+                    hashtags=brand_profile.hashtags,
+                    competitors=brand_profile.competitors,
+                )
+
+            messages = build_general_messages(
+                user_message=user_message,
+                context=context,
+                language=self.settings.bot_language,
+                bot_name=self.settings.bot_name,
+                brand_context=brand_ctx or None,
+            )
+
+            try:
+                response = await self.llm_client.chat(messages)
+                return response.strip()
+            except Exception as exc:
+                logger.error("LLM error in general handler: %s", exc)
+                return (
+                    "👋 Hey! I'm here to help with your marketing — "
+                    "content, strategy, research, and analytics. What would you like to work on?"
+                )
         else:
             return (
                 "🤔 I'm not quite sure what you're looking for. "

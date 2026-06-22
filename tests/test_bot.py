@@ -295,19 +295,21 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_general_chitchat(self, sample_settings, mock_llm_client) -> None:
-        """Message classified as general/chitchat should return greeting."""
+        """Message classified as general/chitchat should use LLM for response."""
         mock_llm_client.chat_json.return_value = {
             "pillar": "general", "action": "chitchat", "confidence": 0.9, "language_detected": "en",
         }
+        mock_llm_client.chat.return_value = "Hey! Good to see you. What marketing task are we tackling today?"
         bot = _make_bot(sample_settings, mock_llm_client)
         update = _make_update(text="Hello!")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
 
-        # Reply should contain a greeting
+        # LLM should have been called for chitchat
+        mock_llm_client.chat.assert_awaited()
         reply_text = update.message.reply_text.call_args_list[-1][0][0]
-        assert "Hey there" in reply_text or "👋" in reply_text
+        assert "Good to see you" in reply_text
 
     @pytest.mark.asyncio
     async def test_unknown_pillar_fallback(self, sample_settings, mock_llm_client) -> None:
@@ -527,12 +529,46 @@ class TestEdgeCases:
         assert "/brand" in response
 
     @pytest.mark.asyncio
-    async def test_general_unclear_action(self, sample_settings, mock_llm_client) -> None:
-        """Verify _handle_general with action='unclear' returns fallback."""
+    async def test_general_unclear_uses_llm(self, sample_settings, mock_llm_client) -> None:
+        """Verify _handle_general with action='unclear' uses LLM response."""
+        mock_llm_client.chat.return_value = "Could you tell me more about what you need? I can help with content, strategy, research, or analytics."
         bot = _make_bot(sample_settings, mock_llm_client)
         result = RouterResult(pillar="general", action="unclear", confidence=0.3)
         response = await bot._handle_general("asdf", result, [], None)
-        assert "not quite sure" in response.lower() or "🤔" in response
+        mock_llm_client.chat.assert_awaited()
+        assert "tell me more" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_general_chitchat_uses_llm(self, sample_settings, mock_llm_client) -> None:
+        """Verify _handle_general with action='chitchat' uses LLM response."""
+        mock_llm_client.chat.return_value = "Halo! Lagi baik nih. Ada yang mau dibantu hari ini?"
+        bot = _make_bot(sample_settings, mock_llm_client)
+        result = RouterResult(pillar="general", action="chitchat", confidence=0.9)
+        response = await bot._handle_general("halo", result, [], None)
+        mock_llm_client.chat.assert_awaited()
+        assert "Lagi baik" in response
+
+    @pytest.mark.asyncio
+    async def test_general_chitchat_llm_error_fallback(self, sample_settings, mock_llm_client) -> None:
+        """Verify chitchat falls back to static message on LLM error."""
+        mock_llm_client.chat.side_effect = Exception("LLM down")
+        bot = _make_bot(sample_settings, mock_llm_client)
+        result = RouterResult(pillar="general", action="chitchat", confidence=0.9)
+        response = await bot._handle_general("hello", result, [], None)
+        assert "👋" in response or "marketing" in response.lower()
+
+    @pytest.mark.asyncio
+    async def test_general_chitchat_with_brand_context(self, sample_settings, mock_llm_client, sample_brand_profile) -> None:
+        """Verify chitchat with brand profile passes brand context to LLM."""
+        mock_llm_client.chat.return_value = "Hey! Ready to help with TestBrand Coffee marketing."
+        bot = _make_bot(sample_settings, mock_llm_client)
+        result = RouterResult(pillar="general", action="chitchat", confidence=0.9)
+        response = await bot._handle_general("hi", result, [], sample_brand_profile)
+        mock_llm_client.chat.assert_awaited()
+        # Verify brand context was included in the messages
+        call_args = mock_llm_client.chat.call_args[0][0]  # first positional arg = messages list
+        system_msg = call_args[0]["content"]  # system message
+        assert "TestBrand" in system_msg
 
     @pytest.mark.asyncio
     async def test_cmd_clear(self, sample_settings, mock_llm_client) -> None:

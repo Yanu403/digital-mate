@@ -67,6 +67,7 @@ try:
     STRATEGY_SYSTEM_PROMPT: str = _load_prompt("strategy.md")
     RESEARCH_SYSTEM_PROMPT: str = _load_prompt("research.md")
     ANALYTICS_SYSTEM_PROMPT: str = _load_prompt("analytics.md")
+    GENERAL_SYSTEM_PROMPT: str = _load_prompt("general.md")
     AGENT_DEFINITION: str = load_agent_definition()
 except FileNotFoundError as exc:
     logger.warning("Some prompt files missing (%s) — using fallback prompts", exc)
@@ -76,6 +77,7 @@ except FileNotFoundError as exc:
     STRATEGY_SYSTEM_PROMPT = "You are a marketing strategy specialist."
     RESEARCH_SYSTEM_PROMPT = "You are a market research specialist."
     ANALYTICS_SYSTEM_PROMPT = "You are a marketing analytics specialist."
+    GENERAL_SYSTEM_PROMPT = "You are a friendly assistant. Respond briefly and naturally."
     AGENT_DEFINITION = ""
 
 # ---------------------------------------------------------------------------
@@ -229,6 +231,56 @@ def build_pillar_messages(
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
     # Include conversation context
+    for msg in context[-8:]:
+        messages.append(msg)
+
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+def build_general_messages(
+    user_message: str,
+    context: list[dict[str, str]],
+    language: str = "bilingual",
+    bot_name: str = "Digital Mate",
+    brand_context: str | None = None,
+) -> list[dict[str, str]]:
+    """Build the message list for general (non-pillar) LLM calls.
+
+    Used for chitchat, greetings, and ambiguous messages where a natural
+    conversational response is better than a hardcoded one.
+
+    Args:
+        user_message: The user's current message.
+        context: Previous conversation messages.
+        language: Language setting.
+        bot_name: Bot display name.
+        brand_context: Optional brand context string.
+
+    Returns:
+        List of message dicts for the LLM.
+    """
+    lang_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["bilingual"])
+
+    general_prompt = Template(GENERAL_SYSTEM_PROMPT).safe_substitute(
+        bot_name=bot_name,
+        brand_context=brand_context or (
+            "## Brand Context\n"
+            "No brand profile configured. No need to mention it."
+        ),
+        language_instruction=lang_instruction,
+    )
+
+    system_parts: list[str] = []
+
+    if AGENT_DEFINITION:
+        system_parts.append(AGENT_DEFINITION)
+
+    system_parts.append(general_prompt)
+    system = "\n\n---\n".join(system_parts)
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+
     for msg in context[-8:]:
         messages.append(msg)
 
