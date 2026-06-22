@@ -21,14 +21,20 @@ class LanguageEnum(str, Enum):
     """Supported bot language modes.
 
     Attributes:
-        BILINGUAL: Match the user's language automatically.
+        BILINGUAL: Auto-detect and match the user's language (EN, ID, ES, ZH, JA, and more).
         EN: Always respond in English.
         ID: Always respond in Bahasa Indonesia.
+        ES: Always respond in Spanish.
+        ZH: Always respond in Chinese (Simplified).
+        JA: Always respond in Japanese.
     """
 
     BILINGUAL = "bilingual"
     EN = "en"
     ID = "id"
+    ES = "es"
+    ZH = "zh"
+    JA = "ja"
 
 
 class Settings(BaseSettings):

@@ -87,8 +87,11 @@ LANGUAGE_INSTRUCTIONS: dict[str, str] = {
         "Respond in the same language the user wrote in. "
         "If they write in English, respond in English. "
         "If they write in Indonesian, respond in Indonesian. "
+        "If they write in Spanish, respond in Spanish. "
+        "If they write in Chinese, respond in Chinese (Simplified). "
+        "If they write in Japanese, respond in Japanese. "
         "If they mix languages, respond in the dominant one. "
-        "Marketing terms can stay in English even when responding in Indonesian "
+        "Marketing terms can stay in English even when responding in another language "
         "(e.g., 'conversion rate', 'CTA', 'ROAS')."
     ),
     "en": "Always respond in English. Marketing terms stay in English.",
@@ -96,6 +99,21 @@ LANGUAGE_INSTRUCTIONS: dict[str, str] = {
         "Always respond in Bahasa Indonesia. "
         "Marketing terms can stay in English when the Indonesian equivalent "
         "is awkward or unknown (e.g., 'CTR', 'ROAS', 'funnel')."
+    ),
+    "es": (
+        "Always respond in Spanish. "
+        "Marketing terms can stay in English when the Spanish equivalent "
+        "is awkward or unknown (e.g., 'CTR', 'ROAS', 'funnel')."
+    ),
+    "zh": (
+        "Always respond in Chinese (Simplified, 简体中文). "
+        "Marketing terms can stay in English when the Chinese equivalent "
+        "is awkward or unknown (e.g., 'CTR', 'ROAS', 'funnel')."
+    ),
+    "ja": (
+        "Always respond in Japanese (日本語). "
+        "Marketing terms can stay in English when the Japanese equivalent "
+        "is awkward or unknown (e.g., 'CTR', 'ROAS', 'ファネル')."
     ),
 }
 

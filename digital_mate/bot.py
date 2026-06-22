@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from telegram import Update
@@ -32,9 +33,12 @@ from digital_mate.memory.session import SessionManager
 from digital_mate.memory.brand_profile import BrandProfileManager, BrandProfile
 from digital_mate.integrations.notion_client import NotionService
 from digital_mate.integrations.search import SearchService
-from digital_mate.utils.formatting import split_message, format_calendar_week
+from digital_mate.utils.formatting import split_message, format_calendar_week, format_calendar_entry
 from digital_mate.utils.validators import sanitize_input
 from digital_mate.utils.security import input_guard, output_guard, sanitize_brand_field, GuardResult, RateLimitState
+from digital_mate.memory.autocalendar import AutoCalendarManager, AutoCalendarSubscription
+from digital_mate.pillars.autocalendar import CalendarGenerator
+from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -59,6 +63,7 @@ class DigitalMateBot:
         brand_manager: BrandProfileManager,
         notion_service: NotionService | None = None,
         search_service: SearchService | None = None,
+        autocalendar_manager: AutoCalendarManager | None = None,
     ) -> None:
         """Initialize the bot with all services.
 
@@ -70,6 +75,7 @@ class DigitalMateBot:
             brand_manager: Brand profile manager.
             notion_service: Optional Notion integration.
             search_service: Optional web search service.
+            autocalendar_manager: Optional auto-calendar subscription manager.
         """
         self.settings = settings
         self.llm_client = llm_client
@@ -78,6 +84,12 @@ class DigitalMateBot:
         self.brand_manager = brand_manager
         self.notion_service = notion_service
         self.search_service = search_service
+        self.autocalendar_manager = autocalendar_manager
+        self._calendar_generator: CalendarGenerator | None = None
+        if autocalendar_manager is not None:
+            self._calendar_generator = CalendarGenerator(
+                llm_client, autocalendar_manager, notion_service,
+            )
 
         # Initialize pillars
         self.content_pillar = ContentPillar(llm_client, settings.bot_language, settings.bot_name)
@@ -129,6 +141,7 @@ class DigitalMateBot:
         self.app.add_handler(CommandHandler("report", self._cmd_report))
         self.app.add_handler(CommandHandler("clear", self._cmd_clear))
         self.app.add_handler(CommandHandler("language", self._cmd_language))
+        self.app.add_handler(CommandHandler("autocalendar", self._cmd_autocalendar))
         self.app.add_handler(CommandHandler("cancel", self._cmd_cancel))
 
         # Brand setup conversation handler
@@ -188,6 +201,7 @@ class DigitalMateBot:
             f"/brand — Set up your brand profile\n"
             f"/calendar — View content calendar (Notion)\n"
             f"/report — Quick performance report (Notion)\n"
+            f"/autocalendar — Auto weekly content calendar (opt-in)\n"
             f"/clear — Clear conversation context\n"
             f"/language en|id|bilingual — Set language\n"
             f"/cancel — Cancel current operation\n\n"
@@ -285,6 +299,224 @@ class DigitalMateBot:
 
         lang_names = {"en": "English 🇬🇧", "id": "Bahasa Indonesia 🇮🇩", "bilingual": "Bilingual 🌐"}
         await update.message.reply_text(f"✅ Language set to: *{lang_names.get(lang, lang)}*", parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_autocalendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /autocalendar command — manage opt-in weekly auto-generated content calendars.
+
+        Subcommands:
+            /autocalendar              — show current status
+            /autocalendar on [day] [h] — enable weekly calendar
+            /autocalendar off          — disable weekly calendar
+            /autocalendar now          — generate immediately
+        """
+        if self.autocalendar_manager is None:
+            await update.message.reply_text(
+                "⚠️ Auto-calendar feature is not available (database not configured)."
+            )
+            return
+
+        chat_id = update.effective_chat.id
+        args = context.args
+
+        if not args:
+            sub = "status"
+        else:
+            sub = args[0].lower()
+
+        if sub == "on":
+            await self._autocalendar_on(update, chat_id, args[1:])
+        elif sub == "off":
+            await self._autocalendar_off(update, chat_id)
+        elif sub == "status":
+            await self._autocalendar_status(update, chat_id)
+        elif sub == "now":
+            await self._autocalendar_now(update, chat_id)
+        else:
+            await update.message.reply_text(
+                "📅 *Auto-Calendar*\\n\\n"
+                "Usage:\\n"
+                "• `/autocalendar` — Show current status\\n"
+                "• `/autocalendar on [day] [hour]` — Enable weekly calendar\\n"
+                "• `/autocalendar off` — Disable weekly calendar\\n"
+                "• `/autocalendar now` — Generate immediately\\n\\n"
+                "`day` is 0–6 (Mon=0 … Sun=6), `hour` is 0–23.\\n"
+                "Default: Monday 09:00.\\n\\n"
+                "Example: `/autocalendar on 1 9` → every Tuesday at 09:00",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+
+    async def _autocalendar_on(self, update: Update, chat_id: int, extra: list[str]) -> None:
+        """Enable auto-calendar for a chat."""
+        day_of_week = 0  # Monday
+        hour = 9
+
+        if len(extra) >= 1:
+            try:
+                d = int(extra[0])
+                if not 0 <= d <= 6:
+                    await update.message.reply_text("❌ Day must be 0–6 (Mon=0 … Sun=6).")
+                    return
+                day_of_week = d
+            except ValueError:
+                await update.message.reply_text("❌ Day must be a number 0–6 (Mon=0 … Sun=6).")
+                return
+
+        if len(extra) >= 2:
+            try:
+                h = int(extra[1])
+                if not 0 <= h <= 23:
+                    await update.message.reply_text("❌ Hour must be 0–23.")
+                    return
+                hour = h
+            except ValueError:
+                await update.message.reply_text("❌ Hour must be a number 0–23.")
+                return
+
+        sub = AutoCalendarSubscription(
+            chat_id=chat_id,
+            enabled=True,
+            day_of_week=day_of_week,
+            hour=hour,
+        )
+        await self.autocalendar_manager.set_subscription(sub)
+
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        await update.message.reply_text(
+            f"✅ Auto-calendar *enabled*!\\n\\n"
+            f"📅 Schedule: every *{day_names[day_of_week]}* at *{hour:02d}:00*\\n"
+            f"I'll generate a fresh 7-day content calendar and push it to Notion each week.\\n\\n"
+            f"Use `/autocalendar now` to generate immediately, or `/autocalendar off` to disable.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _autocalendar_off(self, update: Update, chat_id: int) -> None:
+        """Disable auto-calendar for a chat."""
+        sub = await self.autocalendar_manager.get_subscription(chat_id)
+        if sub is None or not sub.enabled:
+            await update.message.reply_text("ℹ️ Auto-calendar is already disabled.")
+            return
+
+        sub.enabled = False
+        await self.autocalendar_manager.set_subscription(sub)
+        await update.message.reply_text("⏸️ Auto-calendar *disabled*. You can re-enable with `/autocalendar on`.", parse_mode=ParseMode.MARKDOWN)
+
+    async def _autocalendar_status(self, update: Update, chat_id: int) -> None:
+        """Show auto-calendar status for a chat."""
+        sub = await self.autocalendar_manager.get_subscription(chat_id)
+        if sub is None or not sub.enabled:
+            await update.message.reply_text(
+                "📅 Auto-calendar: *disabled*\\n\\n"
+                "Enable with `/autocalendar on`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        last = sub.last_run_at.strftime("%Y-%m-%d %H:%M") if sub.last_run_at else "never"
+        await update.message.reply_text(
+            f"📅 Auto-calendar: *enabled*\\n\\n"
+            f"Schedule: every *{day_names[sub.day_of_week]}* at *{sub.hour:02d}:00*\\n"
+            f"Last run: {last}\\n\\n"
+            f"Commands: `/autocalendar off`, `/autocalendar now`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    async def _autocalendar_now(self, update: Update, chat_id: int) -> None:
+        """Generate an auto-calendar immediately for a chat."""
+        await update.message.reply_text("🔄 Generating your content calendar now... this may take a moment.")
+
+        summary = await self._run_autocalendar_for_chat(chat_id)
+        await update.message.reply_text(summary)
+
+    async def _run_autocalendar_for_chat(self, chat_id: int) -> str:
+        """Generate and deliver a content calendar for a single chat.
+
+        Args:
+            chat_id: Telegram chat ID.
+
+        Returns:
+            Summary message text for the user.
+        """
+        if self.autocalendar_manager is None or self._calendar_generator is None:
+            return "⚠️ Auto-calendar is not available."
+
+        brand_profile = await self.brand_manager.get(chat_id)
+
+        try:
+            entries = await self._calendar_generator.generate_weekly_calendar(brand_profile)
+        except Exception as exc:
+            logger.error("Calendar generation failed for chat %d: %s", chat_id, exc, exc_info=True)
+            return f"⚠️ Calendar generation failed: {exc}"
+
+        # Push to Notion if configured
+        notion_count = 0
+        if self.notion_service and self.notion_service.is_configured:
+            for entry in entries:
+                page_id = await self.notion_service.create_content_entry(
+                    date=entry.date,
+                    platform=entry.platform,
+                    content_type=entry.content_type,
+                    topic=entry.topic,
+                    caption=entry.caption,
+                    hashtags=entry.hashtags,
+                )
+                if page_id:
+                    entry.notion_page_id = page_id
+                    notion_count += 1
+
+        # Persist entries
+        await self.autocalendar_manager.add_entries(chat_id, entries)
+        await self.autocalendar_manager.update_last_run(chat_id)
+
+        # Build summary
+        lines = [f"📅 *Weekly Content Calendar* ({len(entries)} posts)\n"]
+        for entry in entries:
+            lines.append(format_calendar_entry(entry.to_dict()))
+        lines.append(f"\n{'─' * 30}")
+        if notion_count > 0:
+            lines.append(f"✅ {notion_count}/{len(entries)} entries pushed to Notion")
+        elif self.notion_service and self.notion_service.is_configured:
+            lines.append("⚠️ Notion is configured but no entries were pushed")
+        else:
+            lines.append("💡 Connect Notion to sync entries automatically")
+        return "\n".join(lines)
+
+    async def autocalendar_loop(self) -> None:
+        """Background loop that checks for due auto-calendars and generates them.
+
+        Runs indefinitely until cancelled. Checks every minute for subscriptions
+        whose scheduled day-of-week and hour match the current time and that
+        haven't been run in the last 23 hours.
+        """
+        if self.autocalendar_manager is None:
+            logger.warning("Auto-calendar loop disabled: manager not configured")
+            return
+
+        logger.info("Auto-calendar background loop started")
+        while True:
+            try:
+                now = datetime.now()
+                due_subs = await self.autocalendar_manager.get_due_subscriptions(
+                    day_of_week=now.weekday(),
+                    hour=now.hour,
+                )
+                for sub in due_subs:
+                    logger.info("Auto-calendar: generating for chat %d", sub.chat_id)
+                    try:
+                        summary = await self._run_autocalendar_for_chat(sub.chat_id)
+                        # Send via bot if app is available
+                        if self.app and self.app.bot:
+                            for chunk in split_message(summary):
+                                await self.app.bot.send_message(chat_id=sub.chat_id, text=chunk)
+                    except Exception as exc:
+                        logger.error("Auto-calendar run failed for chat %d: %s", sub.chat_id, exc, exc_info=True)
+            except asyncio.CancelledError:
+                logger.info("Auto-calendar loop cancelled")
+                raise
+            except Exception as exc:
+                logger.error("Auto-calendar loop error: %s", exc, exc_info=True)
+
+            await asyncio.sleep(60)
 
     async def _cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle /cancel command — cancel current operation."""

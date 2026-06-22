@@ -105,6 +105,35 @@ def format_calendar_week(entries: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def format_calendar_entry(entry: dict[str, str]) -> str:
+    """Format a single content calendar entry for display.
+
+    Args:
+        entry: Dict with keys 'platform', 'content_type', 'topic',
+               'caption', 'hashtags'.
+
+    Returns:
+        Formatted string showing the content entry.
+    """
+    platform = entry.get("platform", "General")
+    content_type = entry.get("content_type", "Post")
+    topic = entry.get("topic", "Untitled")
+    caption = entry.get("caption", "")
+    hashtags = entry.get("hashtags", "")
+
+    lines = [
+        f"📢 *{topic}*",
+        f"  Platform: {platform}",
+        f"  Type: {content_type}",
+    ]
+    if caption:
+        lines.append(f"  Caption: {caption}")
+    if hashtags:
+        lines.append(f"  Hashtags: {hashtags}")
+
+    return "\n".join(lines)
+
+
 def format_campaign_table(campaigns: list[dict[str, str]]) -> str:
     """Format campaign data as a comparison table.
 

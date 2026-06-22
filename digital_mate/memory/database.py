@@ -42,9 +42,40 @@ CREATE TABLE IF NOT EXISTS brand_profiles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_brand_profiles_chat_id ON brand_profiles(chat_id);
+
+CREATE TABLE IF NOT EXISTS autocalendar (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    day_of_week INTEGER NOT NULL DEFAULT 0,
+    hour INTEGER NOT NULL DEFAULT 9,
+    last_run_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_autocalendar_chat_id ON autocalendar(chat_id);
+CREATE INDEX IF NOT EXISTS idx_autocalendar_enabled ON autocalendar(enabled);
+
+CREATE TABLE IF NOT EXISTS autocalendar_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    week_start DATE NOT NULL,
+    platform TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT '',
+    topic TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    hashtags TEXT NOT NULL DEFAULT '',
+    notion_page_id TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_autocalendar_entries_chat_week
+    ON autocalendar_entries(chat_id, week_start);
 """
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class AsyncCursor:

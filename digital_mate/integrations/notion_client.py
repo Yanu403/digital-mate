@@ -98,6 +98,136 @@ class NotionService:
             logger.error("Notion request failed: %s", exc)
             raise NotionError(f"Notion connection error: {exc}") from exc
 
+    async def create_page(
+        self,
+        database_id: str,
+        properties: dict[str, Any],
+        children: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Create a new page (row) in a Notion database.
+
+        Args:
+            database_id: The Notion database ID to add the page to.
+            properties: Notion property object mapping property names
+                to typed value dicts (e.g. {"Name": {"title": [...]}}).
+            children: Optional list of block objects for page content.
+
+        Returns:
+            The created page object from the Notion API.
+
+        Raises:
+            NotionError: If the request fails.
+        """
+        body: dict[str, Any] = {
+            "parent": {"database_id": database_id},
+            "properties": properties,
+        }
+        if children:
+            body["children"] = children
+
+        return await self._request("POST", "/pages", body)
+
+    @staticmethod
+    def _build_title_property(value: str) -> dict[str, Any]:
+        """Build a Notion title property from a string.
+
+        Args:
+            value: The title text.
+
+        Returns:
+            Notion title property dict.
+        """
+        return {"title": [{"text": {"content": value}}]}
+
+    @staticmethod
+    def _build_rich_text_property(value: str) -> dict[str, Any]:
+        """Build a Notion rich_text property from a string.
+
+        Args:
+            value: The text content.
+
+        Returns:
+            Notion rich_text property dict.
+        """
+        return {"rich_text": [{"text": {"content": value}}]}
+
+    @staticmethod
+    def _build_select_property(value: str) -> dict[str, Any]:
+        """Build a Notion select property from a string.
+
+        Args:
+            value: The select option name.
+
+        Returns:
+            Notion select property dict.
+        """
+        return {"select": {"name": value}}
+
+    @staticmethod
+    def _build_date_property(date_str: str) -> dict[str, Any]:
+        """Build a Notion date property from an ISO date string.
+
+        Args:
+            date_str: ISO date string (YYYY-MM-DD).
+
+        Returns:
+            Notion date property dict.
+        """
+        return {"date": {"start": date_str}}
+
+    async def create_content_entry(
+        self,
+        topic: str,
+        platform: str = "",
+        content_type: str = "",
+        date: str = "",
+        status: str = "Idea",
+        caption: str = "",
+        hashtags: str = "",
+    ) -> str | None:
+        """Create a new content calendar entry in Notion.
+
+        Args:
+            topic: The content topic / title.
+            platform: Target platform (e.g. Instagram, TikTok).
+            content_type: Content type (e.g. Reel, Carousel, Post).
+            date: ISO date string for the scheduled post date.
+            status: Status label (default "Idea").
+            caption: Full caption text for the post.
+            hashtags: Hashtags string.
+
+        Returns:
+            The Notion page ID of the created entry, or None if
+            the content calendar database is not configured or creation fails.
+        """
+        if not self.content_calendar_db:
+            logger.warning("Cannot create content entry: no content calendar DB configured")
+            return None
+
+        properties: dict[str, Any] = {
+            "Name": self._build_title_property(topic),
+            "Status": self._build_select_property(status),
+        }
+        if platform:
+            properties["Platform"] = self._build_select_property(platform)
+        if content_type:
+            properties["Content Type"] = self._build_select_property(content_type)
+        if date:
+            properties["Date"] = self._build_date_property(date)
+        if caption:
+            properties["Caption"] = self._build_rich_text_property(caption)
+        if hashtags:
+            properties["Hashtags"] = self._build_rich_text_property(hashtags)
+
+        try:
+            page = await self.create_page(self.content_calendar_db, properties)
+            page_id = page.get("id")
+            logger.info("Created Notion content entry: %s (id=%s)", topic, page_id)
+            return page_id
+        except NotionError as exc:
+            logger.error("Failed to create Notion content entry '%s': %s", topic, exc)
+            return None
+
     async def query_database(
         self,
         database_id: str,

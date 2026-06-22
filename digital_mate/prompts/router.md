@@ -71,7 +71,7 @@ Respond with ONLY a JSON object:
   "pillar": "<content|strategy|research|analytics|general>",
   "action": "<specific action>",
   "confidence": <0.0-1.0>,
-  "language_detected": "<en|id|mixed>"
+  "language_detected": "en"  # en, id, es, zh, ja — ISO 639-1
 }
 ```
 

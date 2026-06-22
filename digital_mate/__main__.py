@@ -84,6 +84,7 @@ async def _run_bot() -> None:
     from digital_mate.memory.database import AsyncConnection as _AsyncConn
     from digital_mate.memory.session import SessionManager
     from digital_mate.memory.brand_profile import BrandProfileManager
+    from digital_mate.memory.autocalendar import AutoCalendarManager
     from digital_mate.integrations.notion_client import NotionService
     from digital_mate.integrations.search import SearchService
     from digital_mate.bot import DigitalMateBot
@@ -114,6 +115,7 @@ async def _run_bot() -> None:
 
     session_manager = SessionManager(db, max_turns=settings.max_conversation_turns)
     brand_manager = BrandProfileManager(db)
+    autocalendar_manager = AutoCalendarManager(db)
 
     # Optional: Notion integration
     notion_service: NotionService | None = None
@@ -138,6 +140,7 @@ async def _run_bot() -> None:
         brand_manager=brand_manager,
         notion_service=notion_service,
         search_service=search_service,
+        autocalendar_manager=autocalendar_manager,
     )
 
     app = bot.build_application()
@@ -183,6 +186,10 @@ async def _run_bot() -> None:
     rate_limit_task = asyncio.create_task(bot._rate_limit_cleanup_loop())
     logger.info("Rate limit cleanup task started (interval: 1h)")
 
+    # Start background auto-calendar generation loop (checks every 60s)
+    autocalendar_task = asyncio.create_task(bot.autocalendar_loop())
+    logger.info("Auto-calendar generation task started (interval: 60s)")
+
     def _shutdown_handler(sig: signal.Signals) -> None:
         logger.info("Received signal %s, shutting down gracefully...", sig.name)
         # The polling will stop on next iteration
@@ -218,6 +225,7 @@ async def _run_bot() -> None:
     logger.info("Stopping bot...")
     cleanup_task.cancel()
     rate_limit_task.cancel()
+    autocalendar_task.cancel()
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
