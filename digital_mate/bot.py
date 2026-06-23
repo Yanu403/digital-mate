@@ -48,6 +48,8 @@ from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
 from digital_mate.utils.keyboards import feedback_keyboard
 from digital_mate.utils.image import encode_image_file
 from digital_mate.agent.orchestrator import Orchestrator
+from digital_mate.agent.planner import Planner
+from digital_mate.agent.plan_store import PlanStore
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,7 @@ class DigitalMateBot:
         autocalendar_manager: AutoCalendarManager | None = None,
         response_store: ResponseStore | None = None,
         key_fact_manager: KeyFactManager | None = None,
+        plan_store: PlanStore | None = None,
     ) -> None:
         """Initialize the bot with all services.
 
@@ -120,6 +123,7 @@ class DigitalMateBot:
             response_store: Optional response store for feedback buttons.
                 When None, feedback buttons are not attached to responses.
             key_fact_manager: Optional key fact manager for long-term memory.
+            plan_store: Optional plan store for multi-step plan persistence.
         """
         self.settings = settings
         self.llm_client = llm_client
@@ -156,8 +160,16 @@ class DigitalMateBot:
             "analytics": self.analytics_pillar,
         }
 
-        # Orchestrator for multi-step workflow chaining (Phase 1)
-        self._orchestrator = Orchestrator(self._pillars)
+        # Orchestrator for multi-step workflow chaining (Phase 1) and planning (Phase 2)
+        self.plan_store = plan_store
+        self._planner: Planner | None = None
+        if plan_store is not None:
+            self._planner = Planner(llm_client)
+        self._orchestrator = Orchestrator(
+            self._pillars,
+            planner=self._planner,
+            plan_store=plan_store,
+        )
 
         self._rate_limits: TTLCache[int, RateLimitState] = TTLCache(maxsize=1000, ttl=3600)
         self.app: Application | None = None
@@ -192,6 +204,8 @@ class DigitalMateBot:
         self.app.add_handler(CommandHandler("language", self._cmd_language))
         self.app.add_handler(CommandHandler("autocalendar", self._cmd_autocalendar))
         self.app.add_handler(CommandHandler("cancel", self._cmd_cancel))
+        self.app.add_handler(CommandHandler("plan", self._cmd_plan))
+        self.app.add_handler(CommandHandler("cancelplan", self._cmd_cancelplan))
 
         # Brand setup conversation handler
         brand_conv = ConversationHandler(
@@ -266,6 +280,8 @@ class DigitalMateBot:
             f"/calendar — View content calendar (Notion)\n"
             f"/report — Quick performance report (Notion)\n"
             f"/autocalendar — Auto weekly content calendar (opt-in)\n"
+            f"/plan — Show active plan progress\n"
+            f"/cancelplan — Cancel active plan\n"
             f"/clear — Clear conversation context\n"
             f"/language en|id|bilingual — Set language\n"
             f"/cancel — Cancel current operation\n\n"
@@ -591,6 +607,68 @@ class DigitalMateBot:
         await update.message.reply_text("❌ Operation cancelled. You can start fresh anytime!")
         return ConversationHandler.END
 
+    async def _cmd_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /plan command — show active plan progress."""
+        if self.plan_store is None:
+            await update.message.reply_text("📋 Plan feature is not available.")
+            return
+
+        chat_id = update.effective_chat.id
+        plan = await self.plan_store.get_active_plan(chat_id)
+
+        if plan is None:
+            await update.message.reply_text(
+                "📋 No active plan.\n\n"
+                "Send me a complex marketing goal and I'll create a multi-step plan for you!\n"
+                "Example: \"Help me launch a full Instagram campaign for my coffee brand\""
+            )
+            return
+
+        steps = plan["steps"]
+        goal = plan["goal"]
+        goal_short = goal[:60] + "..." if len(goal) > 60 else goal
+
+        lines = [f'📋 *Active Plan:* "{goal_short}"', ""]
+        for step in steps:
+            order = step["step_order"]
+            desc = step["description"]
+            status = step["status"]
+            if status == "completed":
+                lines.append(f"✅ {order}/{len(steps)}: {desc}")
+            elif status == "running":
+                lines.append(f"⏳ {order}/{len(steps)}: {desc} [running...]")
+            elif status == "failed":
+                err = step.get("error_message", "unknown error")
+                lines.append(f"❌ {order}/{len(steps)}: {desc} ({err})")
+            else:
+                lines.append(f"⬜ {order}/{len(steps)}: {desc}")
+
+        lines.append(f"\nStatus: _{plan['status']}_")
+        lines.append("Use /cancelplan to cancel this plan.")
+
+        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+    async def _cmd_cancelplan(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /cancelplan command — cancel active plan."""
+        if self.plan_store is None:
+            await update.message.reply_text("📋 Plan feature is not available.")
+            return
+
+        chat_id = update.effective_chat.id
+        plan = await self.plan_store.get_active_plan(chat_id)
+
+        if plan is None:
+            await update.message.reply_text("📋 No active plan to cancel.")
+            return
+
+        await self.plan_store.cancel_plan(plan["plan_id"])
+        goal = plan["goal"]
+        goal_short = goal[:60] + "..." if len(goal) > 60 else goal
+        await update.message.reply_text(
+            f'❌ Plan cancelled: "{goal_short}"\n\n'
+            "You can start a new plan anytime by sending me your marketing goal!"
+        )
+
     # -----------------------------------------------------------------------
     # Brand setup conversation
     # -----------------------------------------------------------------------
@@ -892,6 +970,8 @@ class DigitalMateBot:
                         brand_profile=brand_profile,
                         key_facts=key_facts_text,
                         on_progress=_workflow_progress,
+                        confidence=result.confidence,
+                        chat_id=chat_id,
                     )
                     if was_workflow:
                         orchestrated = True

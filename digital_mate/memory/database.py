@@ -106,9 +106,38 @@ CREATE TABLE IF NOT EXISTS key_facts (
 
 CREATE INDEX IF NOT EXISTS idx_key_facts_chat_id ON key_facts(chat_id);
 CREATE INDEX IF NOT EXISTS idx_key_facts_active ON key_facts(is_active);
+
+CREATE TABLE IF NOT EXISTS plans (
+    plan_id TEXT PRIMARY KEY,
+    chat_id INTEGER NOT NULL,
+    goal TEXT NOT NULL,
+    status TEXT DEFAULT 'active' CHECK(status IN ('active', 'completed', 'failed', 'cancelled')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS plan_steps (
+    step_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id TEXT NOT NULL,
+    step_order INTEGER NOT NULL,
+    pillar TEXT NOT NULL,
+    action TEXT NOT NULL,
+    description TEXT NOT NULL,
+    input_from TEXT DEFAULT 'user_request',
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'failed', 'skipped')),
+    result_text TEXT,
+    error_message TEXT,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (plan_id) REFERENCES plans(plan_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_plans_chat_id ON plans(chat_id);
+CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
+CREATE INDEX IF NOT EXISTS idx_plan_steps_plan_id ON plan_steps(plan_id);
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class AsyncCursor:

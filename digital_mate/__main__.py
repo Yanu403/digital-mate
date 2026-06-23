@@ -87,6 +87,7 @@ async def _run_bot() -> None:
     from digital_mate.memory.key_facts import KeyFactManager
     from digital_mate.memory.autocalendar import AutoCalendarManager
     from digital_mate.memory.response_store import ResponseStore
+    from digital_mate.agent.plan_store import PlanStore
     from digital_mate.integrations.notion_client import NotionService
     from digital_mate.integrations.search import SearchService
     from digital_mate.bot import DigitalMateBot
@@ -125,6 +126,9 @@ async def _run_bot() -> None:
     response_store = ResponseStore(db)
     logger.info("Response store (feedback logging) initialized")
 
+    plan_store = PlanStore(db)
+    logger.info("Plan store initialized")
+
     # Optional: Notion integration
     notion_service: NotionService | None = None
     if settings.notion_api_key:
@@ -151,6 +155,7 @@ async def _run_bot() -> None:
         autocalendar_manager=autocalendar_manager,
         response_store=response_store,
         key_fact_manager=key_fact_manager,
+        plan_store=plan_store,
     )
 
     app = bot.build_application()
@@ -200,6 +205,21 @@ async def _run_bot() -> None:
     autocalendar_task = asyncio.create_task(bot.autocalendar_loop())
     logger.info("Auto-calendar generation task started (interval: 60s)")
 
+    # Start background plan cleanup task (every 24 hours)
+    async def _plan_cleanup_loop(interval_hours: int = 24) -> None:
+        """Background task that purges expired plans periodically."""
+        while True:
+            await asyncio.sleep(interval_hours * 3600)
+            try:
+                deleted = await plan_store.cleanup_old_plans(days=7)
+                if deleted > 0:
+                    logger.info("Plan cleanup: removed %d expired plans", deleted)
+            except Exception as exc:
+                logger.error("Plan cleanup failed: %s", exc)
+
+    plan_cleanup_task = asyncio.create_task(_plan_cleanup_loop())
+    logger.info("Plan cleanup task started (interval: 24h, expiry: 7 days)")
+
     def _shutdown_handler(sig: signal.Signals) -> None:
         logger.info("Received signal %s, shutting down gracefully...", sig.name)
         # The polling will stop on next iteration
@@ -236,6 +256,7 @@ async def _run_bot() -> None:
     cleanup_task.cancel()
     rate_limit_task.cancel()
     autocalendar_task.cancel()
+    plan_cleanup_task.cancel()
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
