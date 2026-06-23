@@ -105,7 +105,7 @@ class IntentRouter:
         self.language = language
         self.bot_name = bot_name
         self._cache: TTLCache[str, RouterResult] = TTLCache(maxsize=cache_maxsize, ttl=cache_ttl)
-        self._last_call: dict[int, float] = {}
+        self._last_call: TTLCache[int, float] = TTLCache(maxsize=10_000, ttl=3600)
         self._cooldown_seconds = cooldown_seconds
 
     async def classify(
@@ -127,7 +127,7 @@ class IntentRouter:
         Returns:
             RouterResult with pillar, action, confidence, and language.
         """
-        cache_key = hashlib.sha256(message.encode()).hexdigest()
+        cache_key = hashlib.sha256(f"{chat_id}:{message}".encode()).hexdigest()
 
         # 1. Check cache
         cached = self._cache.get(cache_key)

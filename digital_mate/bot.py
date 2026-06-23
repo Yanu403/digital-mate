@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import tempfile
 import time
 from datetime import datetime
 from typing import Any
@@ -185,12 +187,19 @@ class DigitalMateBot:
         )
 
         self._rate_limits: TTLCache[int, RateLimitState] = TTLCache(maxsize=1000, ttl=3600)
+        self._regen_locks: dict[int, asyncio.Lock] = {}
+        self._shutdown = asyncio.Event()
         self.app: Application | None = None
 
     async def _rate_limit_cleanup_loop(self, interval_hours: int = 1) -> None:
         """Periodically reset injection counters for all tracked users."""
-        while True:
-            await asyncio.sleep(interval_hours * 3600)
+        while not self._shutdown.is_set():
+            try:
+                await asyncio.wait_for(self._shutdown.wait(), timeout=interval_hours * 3600)
+            except asyncio.TimeoutError:
+                pass
+            if self._shutdown.is_set():
+                break
             for state in list(self._rate_limits.values()):
                 state.reset()
             logger.debug("Rate limit counters reset for %d users", len(self._rate_limits))
@@ -210,7 +219,7 @@ class DigitalMateBot:
         # Register command handlers
         self.app.add_handler(CommandHandler("start", self._cmd_start))
         self.app.add_handler(CommandHandler("help", self._cmd_help))
-        self.app.add_handler(CommandHandler("brand", self._cmd_brand_start))
+        # /brand is handled by the ConversationHandler below — do NOT register a standalone handler
         self.app.add_handler(CommandHandler("calendar", self._cmd_calendar))
         self.app.add_handler(CommandHandler("report", self._cmd_report))
         self.app.add_handler(CommandHandler("clear", self._cmd_clear))
@@ -240,7 +249,7 @@ class DigitalMateBot:
             },
             fallbacks=[CommandHandler("cancel", self._cmd_cancel)],
             per_chat=True,
-            per_user=False,
+            per_user=True,
             per_message=False,
         )
         self.app.add_handler(brand_conv, group=1)
@@ -264,6 +273,10 @@ class DigitalMateBot:
         )
 
         return self.app
+
+    def stop(self) -> None:
+        """Signal all background loops to stop gracefully."""
+        self._shutdown.set()
 
     # -----------------------------------------------------------------------
     # Command handlers
@@ -590,17 +603,27 @@ class DigitalMateBot:
             return
 
         logger.info("Auto-calendar background loop started")
-        while True:
+        while not self._shutdown.is_set():
             try:
                 now = datetime.now()
+                from datetime import date
+                today = date.today()
                 all_subs = await self.autocalendar_manager.get_enabled_subscriptions()
                 # Filter to subscriptions due now (matching day + hour, not already run today)
-                due_subs = [
-                    sub for sub in all_subs
-                    if sub.day_of_week == now.weekday()
-                    and sub.hour == now.hour
-                    and sub.last_run_at != now.strftime("%Y-%m-%d")
-                ]
+                due_subs = []
+                for sub in all_subs:
+                    if sub.day_of_week != now.weekday() or sub.hour != now.hour:
+                        continue
+                    # Parse last_run_at ISO string to compare dates
+                    last_run_date = None
+                    if sub.last_run_at:
+                        try:
+                            last_run_date = sub.last_run_at[:10]  # "YYYY-MM-DD" prefix
+                        except (TypeError, IndexError):
+                            last_run_date = None
+                    if last_run_date == today.isoformat():
+                        continue
+                    due_subs.append(sub)
                 for sub in due_subs:
                     logger.info("Auto-calendar: generating for chat %d", sub.chat_id)
                     try:
@@ -617,7 +640,10 @@ class DigitalMateBot:
             except Exception as exc:
                 logger.error("Auto-calendar loop error: %s", exc, exc_info=True)
 
-            await asyncio.sleep(60)
+            try:
+                await asyncio.wait_for(self._shutdown.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
 
     async def resume_interrupted_plans(self) -> None:
         """On startup, check for and resume any interrupted plans.
@@ -670,24 +696,23 @@ class DigitalMateBot:
                 if self.key_fact_manager:
                     key_facts_text = await self.key_fact_manager.get_facts_context(chat_id)
 
-                # Use executor to run remaining steps
-                if self._orchestrator._executor is not None:
-                    result_text = await self._orchestrator._executor.execute(
-                        plan_id=plan_id,
-                        steps=plan["steps"],
-                        user_message=goal,
-                        context=ctx,
-                        brand_profile=brand_profile,
-                        key_facts=key_facts_text,
-                    )
+                # Use orchestrator's public resume_plan method
+                result_text = await self._orchestrator.resume_plan(
+                    plan_id=plan_id,
+                    user_message=goal,
+                    user_id=chat_id,
+                    context=ctx,
+                    brand_profile=brand_profile,
+                    key_facts=key_facts_text,
+                )
 
-                    # Send result to user
-                    if self.app and self.app.bot:
-                        from digital_mate.utils.formatting import split_message
-                        for chunk in split_message(result_text):
-                            await self.app.bot.send_message(chat_id=chat_id, text=chunk)
+                # Send result to user
+                if result_text and self.app and self.app.bot:
+                    from digital_mate.utils.formatting import split_message
+                    for chunk in split_message(result_text):
+                        await self.app.bot.send_message(chat_id=chat_id, text=chunk)
 
-                    logger.info("Resumed and completed plan %s for chat %d", plan_id, chat_id)
+                logger.info("Resumed and completed plan %s for chat %d", plan_id, chat_id)
             except Exception as exc:
                 logger.error("Failed to resume plan %s for chat %d: %s", plan_id, chat_id, exc)
                 try:
@@ -1267,10 +1292,13 @@ class DigitalMateBot:
                 try:
                     msg_count = await self.session_manager.get_message_count(chat_id)
                     if msg_count > 0 and msg_count % 10 == 0:
-                        asyncio.create_task(
+                        task = asyncio.create_task(
                             self.key_fact_manager.extract_facts_from_conversation(
                                 chat_id, self.llm_client, ctx
                             )
+                        )
+                        task.add_done_callback(
+                            lambda t: logger.warning("Key fact extraction failed: %s", t.exception()) if t.exception() else None
                         )
                 except Exception as exc:
                     logger.warning("Key fact extraction trigger failed for chat %d: %s", chat_id, exc)
@@ -1320,6 +1348,71 @@ class DigitalMateBot:
                 "⚠️ Sorry, something went wrong processing your message. Please try again!"
             )
 
+    # -----------------------------------------------------------------------
+    # Streaming helpers
+    # -----------------------------------------------------------------------
+
+    TELEGRAM_LIMIT = 4000
+    EDIT_INTERVAL = 1.0
+    EDIT_CHAR_INTERVAL = 200
+
+    async def _stream_into_placeholder(
+        self,
+        update: Update,
+        placeholder: Any,
+        sent_messages: list,
+        async_generator: Any,
+    ) -> str:
+        """Stream tokens from an async generator into a Telegram placeholder.
+
+        Handles buffer accumulation, Telegram message limit overflow,
+        progressive edit throttling, and final buffer flush.
+
+        Args:
+            update: The Telegram Update (used to send overflow messages).
+            placeholder: The initial message to progressively edit.
+            sent_messages: List tracking all messages sent (appended in place).
+            async_generator: An async iterable yielding text chunks.
+
+        Returns:
+            The full accumulated response text.
+        """
+        buffer = ""
+        last_edit = time.monotonic()
+        current_msg = placeholder
+
+        async for chunk in async_generator:
+            buffer += chunk
+            now = time.monotonic()
+            # Flush if we're about to exceed Telegram's message limit.
+            if len(buffer) >= self.TELEGRAM_LIMIT:
+                try:
+                    await current_msg.edit_text(buffer[:self.TELEGRAM_LIMIT])
+                except Exception as exc:
+                    logger.warning("edit_text overflow flush failed: %s", exc)
+                overflow = buffer[self.TELEGRAM_LIMIT:]
+                current_msg = await update.message.reply_text(overflow or "...")
+                sent_messages.append(current_msg)
+                buffer = overflow
+                last_edit = now
+                continue
+            # Throttle edits: at most ~1/sec or every ~200 chars.
+            if (now - last_edit >= self.EDIT_INTERVAL) or (len(buffer) % self.EDIT_CHAR_INTERVAL < len(chunk)):
+                try:
+                    await current_msg.edit_text(buffer)
+                except Exception as exc:
+                    logger.debug("progressive edit_text skipped: %s", exc)
+                last_edit = now
+
+        # Final edit with the complete buffer for the current message.
+        if buffer:
+            try:
+                await current_msg.edit_text(buffer)
+            except Exception as exc:
+                logger.debug("final edit_text skipped: %s", exc)
+
+        return buffer
+
     async def _stream_pillar_response(
         self,
         update: Update,
@@ -1335,19 +1428,13 @@ class DigitalMateBot:
     ) -> str:
         """Stream a pillar response into the placeholder message.
 
-        Accumulates chunks from ``pillar.handle_stream()`` and progressively
-        edits the placeholder. Throttles edits to roughly one per second (or
-        every ~200 chars). If the buffer exceeds 4000 chars (Telegram's 4096
-        limit), the current buffer is flushed as a new message and a fresh
-        buffer starts. On completion the final buffer is edited into the last
-        message. If an LLM error occurs mid-stream, the placeholder is edited
-        with the error text.
+        Delegates to ``_stream_into_placeholder`` with the pillar's
+        ``handle_stream()`` async generator.
 
         Args:
             update: The Telegram Update (used to send overflow messages).
             placeholder: The initial "⏳ Thinking..." message to edit.
-            sent_messages: List tracking all messages sent (appended in place);
-                the last entry is where the feedback keyboard will land.
+            sent_messages: List tracking all messages sent (appended in place).
             pillar: The pillar instance to stream from.
             user_message: The user's message text.
             action: The classified action.
@@ -1358,51 +1445,14 @@ class DigitalMateBot:
         Returns:
             The full accumulated response text.
         """
-        buffer = ""
-        last_edit = time.monotonic()
-        current_msg = placeholder
-        TELEGRAM_LIMIT = 4000
-        EDIT_INTERVAL = 1.0
-        EDIT_CHAR_INTERVAL = 200
-
-        async for chunk in pillar.handle_stream(
+        async_gen = pillar.handle_stream(
             user_message=user_message,
             action=action,
             context=context,
             brand_profile=brand_profile,
             key_facts=key_facts,
-        ):
-            buffer += chunk
-            now = time.monotonic()
-            # Flush if we're about to exceed Telegram's message limit.
-            if len(buffer) >= TELEGRAM_LIMIT:
-                try:
-                    await current_msg.edit_text(buffer[:TELEGRAM_LIMIT])
-                except Exception as exc:
-                    logger.warning("edit_text overflow flush failed: %s", exc)
-                overflow = buffer[TELEGRAM_LIMIT:]
-                current_msg = await update.message.reply_text(overflow)
-                sent_messages.append(current_msg)
-                buffer = overflow
-                last_edit = now
-                continue
-            # Throttle edits: at most ~1/sec or every ~200 chars.
-            if (now - last_edit >= EDIT_INTERVAL) or (len(buffer) % EDIT_CHAR_INTERVAL < len(chunk)):
-                try:
-                    await current_msg.edit_text(buffer)
-                except Exception as exc:
-                    # "message is not modified" is harmless during rapid edits.
-                    logger.debug("progressive edit_text skipped: %s", exc)
-                last_edit = now
-
-        # Final edit with the complete buffer for the current message.
-        if buffer:
-            try:
-                await current_msg.edit_text(buffer)
-            except Exception as exc:
-                logger.debug("final edit_text skipped: %s", exc)
-
-        return buffer
+        )
+        return await self._stream_into_placeholder(update, placeholder, sent_messages, async_gen)
 
     async def _handle_general(
         self,
@@ -1519,9 +1569,6 @@ class DigitalMateBot:
 
         # Show typing indicator
         await update.message.chat.send_action(ChatAction.TYPING)
-
-        import os
-        import tempfile
 
         tmp_path: str | None = None
         try:
@@ -1692,9 +1739,8 @@ class DigitalMateBot:
     ) -> str:
         """Stream a vision LLM response into the placeholder message.
 
-        Uses :meth:`LLMClient.chat_with_image_stream` for real-time token
-        delivery with the same progressive-edit pattern as
-        :meth:`_stream_pillar_response`.
+        Wraps the LLM image stream with error handling, then delegates to
+        ``_stream_into_placeholder`` for the actual buffering and editing.
 
         Args:
             update: The Telegram Update.
@@ -1708,56 +1754,33 @@ class DigitalMateBot:
         Returns:
             The full accumulated response text.
         """
-        buffer = ""
-        last_edit = time.monotonic()
-        current_msg = placeholder
-        TELEGRAM_LIMIT = 4000
-        EDIT_INTERVAL = 1.0
-        EDIT_CHAR_INTERVAL = 200
 
-        try:
-            async for chunk in self.llm_client.chat_with_image_stream(
-                messages,
-                image_base64=image_base64,
-                image_mime_type=image_mime,
-                max_tokens=2048,
-                model=vision_model,
-            ):
-                buffer += chunk
-                now = time.monotonic()
-                # Flush if we're about to exceed Telegram's message limit.
-                if len(buffer) >= TELEGRAM_LIMIT:
-                    try:
-                        await current_msg.edit_text(buffer[:TELEGRAM_LIMIT])
-                    except Exception as exc:
-                        logger.warning("edit_text overflow flush failed: %s", exc)
-                    overflow = buffer[TELEGRAM_LIMIT:]
-                    current_msg = await update.message.reply_text(overflow)
-                    sent_messages.append(current_msg)
-                    buffer = overflow
-                    last_edit = now
-                    continue
-                # Throttle edits: at most ~1/sec or every ~200 chars.
-                if (now - last_edit >= EDIT_INTERVAL) or (len(buffer) % EDIT_CHAR_INTERVAL < len(chunk)):
-                    try:
-                        await current_msg.edit_text(buffer)
-                    except Exception as exc:
-                        logger.debug("progressive edit_text skipped: %s", exc)
-                    last_edit = now
-        except Exception as exc:
-            logger.error("Vision stream error: %s", exc)
-            if not buffer:
-                buffer = (
-                    "⚠️ Sorry, I encountered an error analyzing the image. "
-                    "Please try again in a moment."
-                )
-
-        # Final edit with the complete buffer.
-        if buffer:
+        async def _image_stream():
             try:
-                await current_msg.edit_text(buffer)
+                async for chunk in self.llm_client.chat_with_image_stream(
+                    messages,
+                    image_base64=image_base64,
+                    image_mime_type=image_mime,
+                    max_tokens=2048,
+                    model=vision_model,
+                ):
+                    yield chunk
             except Exception as exc:
-                logger.debug("final edit_text skipped: %s", exc)
+                logger.error("Vision stream error: %s", exc)
+                yield ""
+
+        buffer = await self._stream_into_placeholder(update, placeholder, sent_messages, _image_stream())
+
+        # If the stream produced nothing (error before any tokens), set fallback
+        if not buffer:
+            buffer = (
+                "⚠️ Sorry, I encountered an error analyzing the image. "
+                "Please try again in a moment."
+            )
+            try:
+                await placeholder.edit_text(buffer)
+            except Exception:
+                pass
 
         return buffer
 
@@ -1848,6 +1871,21 @@ class DigitalMateBot:
         log_id: int,
     ) -> None:
         """Process a 🔄 regenerate — re-run the pillar and edit the message."""
+        # Rate-limit: prevent concurrent regeneration for the same log_id
+        lock = self._regen_locks.setdefault(log_id, asyncio.Lock())
+        if lock.locked():
+            await query.answer("⏳ Regenerating, please wait...")
+            return
+        async with lock:
+            await self._do_feedback_regen(query, rstore, log_id)
+
+    async def _do_feedback_regen(
+        self,
+        query: Any,
+        rstore: ResponseStore,
+        log_id: int,
+    ) -> None:
+        """Inner implementation of feedback regeneration (called under lock)."""
         record = await rstore.get(log_id)
         if record is None:
             await query.edit_message_text(

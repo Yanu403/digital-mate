@@ -186,6 +186,42 @@ class Orchestrator:
         if plan_store is not None:
             self._executor = PlanExecutor(pillars, plan_store)
 
+    async def resume_plan(
+        self,
+        plan_id: str,
+        user_message: str,
+        user_id: int,
+        context: list[dict[str, str]],
+        brand_profile: BrandProfile | None = None,
+        key_facts: str = "",
+        on_progress: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str | None:
+        """Resume an interrupted plan by executing remaining steps.
+
+        Args:
+            plan_id: The plan ID to resume.
+            user_message: Original user message (plan goal).
+            user_id: Chat/user ID for plan persistence.
+            context: Conversation context.
+            brand_profile: Optional brand profile.
+            key_facts: Key facts for personalization.
+            on_progress: Optional progress callback.
+
+        Returns:
+            Result text if plan was executed, None if executor is unavailable.
+        """
+        if self._executor is None:
+            return None
+        return await self._executor.execute(
+            plan_id=plan_id,
+            steps=[],  # executor fetches from store
+            user_message=user_message,
+            context=context,
+            brand_profile=brand_profile,
+            key_facts=key_facts,
+            on_progress=on_progress,
+        )
+
     async def execute(
         self,
         user_message: str,
