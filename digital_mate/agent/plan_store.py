@@ -215,3 +215,94 @@ class PlanStore:
         if deleted > 0:
             logger.info("Cleaned up %d old plans (older than %d days)", deleted, days)
         return deleted
+
+    async def get_interrupted_plans(self) -> list[dict]:
+        """Find all active plans with interrupted steps.
+
+        An interrupted plan is one with status='active' that has at least
+        one step with status='running' (the bot was killed mid-execution).
+        These steps are reset to 'pending' before the plan list is returned.
+
+        Returns:
+            List of plan dicts with 'steps' key, each plan containing
+            plan_id, chat_id, goal, status, and steps list.
+        """
+        cursor = await self.db.execute(
+            "SELECT DISTINCT p.plan_id FROM plans p "
+            "JOIN plan_steps ps ON p.plan_id = ps.plan_id "
+            "WHERE p.status = 'active' AND ps.status = 'running'"
+        )
+        rows = await cursor.fetchall()
+
+        plans: list[dict] = []
+        for row in rows:
+            plan_id = row[0]
+            plan = await self.get_active_plan_by_id(plan_id)
+            if plan is not None:
+                # Reset running steps back to pending
+                for step in plan.get("steps", []):
+                    if step["status"] == "running":
+                        await self.update_step_status(plan_id, step["step_order"], "pending")
+                        step["status"] = "pending"
+                plans.append(plan)
+
+        if plans:
+            logger.info("Found %d interrupted plans for resume", len(plans))
+        return plans
+
+    async def get_active_plan_by_id(self, plan_id: str) -> dict | None:
+        """Get a plan by its ID, including all steps.
+
+        Args:
+            plan_id: The plan UUID.
+
+        Returns:
+            Dict with plan info and 'steps' list, or None if not found.
+        """
+        cursor = await self.db.execute(
+            "SELECT plan_id, chat_id, goal, status, created_at, updated_at "
+            "FROM plans WHERE plan_id = ?",
+            (plan_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+
+        plan = {
+            "plan_id": row[0],
+            "chat_id": row[1],
+            "goal": row[2],
+            "status": row[3],
+            "created_at": row[4],
+            "updated_at": row[5],
+        }
+
+        steps_cursor = await self.db.execute(
+            "SELECT step_id, step_order, pillar, action, description, input_from, "
+            "status, result_text, error_message, started_at, completed_at "
+            "FROM plan_steps WHERE plan_id = ? ORDER BY step_order",
+            (plan["plan_id"],),
+        )
+        steps_rows = await steps_cursor.fetchall()
+        plan["steps"] = [
+            {
+                "step_id": r[0],
+                "step_order": r[1],
+                "pillar": r[2],
+                "action": r[3],
+                "description": r[4],
+                "input_from": r[5],
+                "status": r[6],
+                "result_text": r[7],
+                "error_message": r[8],
+                "started_at": r[9],
+                "completed_at": r[10],
+            }
+            for r in steps_rows
+        ]
+        return plan
+        deleted = cursor.rowcount
+        await self.db.commit()
+        if deleted > 0:
+            logger.info("Cleaned up %d old plans (older than %d days)", deleted, days)
+        return deleted

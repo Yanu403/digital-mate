@@ -293,6 +293,11 @@ async def _run_bot() -> None:
             pass
 
     await app.initialize()
+
+    # Fire-and-forget: resume any plans that were interrupted by a restart
+    asyncio.create_task(bot.resume_interrupted_plans())
+    logger.info("Interrupted plan resume check queued")
+
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 

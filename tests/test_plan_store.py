@@ -196,3 +196,128 @@ class TestCleanupOldPlans:
         await db.commit()
         deleted = await store.cleanup_old_plans(days=7)
         assert deleted == 1
+
+
+class TestGetInterruptedPlans:
+    """Tests for PlanStore.get_interrupted_plans."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_plans(self, store: PlanStore):
+        plans = await store.get_interrupted_plans()
+        assert plans == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_running_steps(self, store: PlanStore):
+        """Active plans with only pending steps are not interrupted."""
+        steps = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        await store.create_plan(123, "Goal", steps)
+
+        plans = await store.get_interrupted_plans()
+        assert plans == []
+
+    @pytest.mark.asyncio
+    async def test_finds_plan_with_running_step(self, store: PlanStore):
+        """Plans with a 'running' step are considered interrupted."""
+        steps = [
+            {"pillar": "research", "action": "trends", "description": "Research"},
+            {"pillar": "content", "action": "caption", "description": "Write"},
+        ]
+        plan_id = await store.create_plan(123, "Launch campaign", steps)
+        await store.update_step_status(plan_id, 1, "running")
+
+        plans = await store.get_interrupted_plans()
+        assert len(plans) == 1
+        assert plans[0]["plan_id"] == plan_id
+        assert plans[0]["chat_id"] == 123
+        assert plans[0]["goal"] == "Launch campaign"
+
+    @pytest.mark.asyncio
+    async def test_resets_running_steps_to_pending(self, store: PlanStore):
+        """Running steps should be reset to pending."""
+        steps = [
+            {"pillar": "research", "action": "trends", "description": "Research"},
+            {"pillar": "content", "action": "caption", "description": "Write"},
+        ]
+        plan_id = await store.create_plan(123, "Goal", steps)
+        await store.update_step_status(plan_id, 1, "completed", result_text="done")
+        await store.update_step_status(plan_id, 2, "running")
+
+        plans = await store.get_interrupted_plans()
+        assert len(plans) == 1
+
+        # Verify steps were reset
+        plan = await store.get_active_plan_by_id(plan_id)
+        assert plan["steps"][0]["status"] == "completed"  # completed stays
+        assert plan["steps"][1]["status"] == "pending"  # running → pending
+
+    @pytest.mark.asyncio
+    async def test_ignores_completed_plans(self, store: PlanStore):
+        """Completed plans are not considered interrupted even with stale running steps."""
+        steps = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        plan_id = await store.create_plan(123, "Goal", steps)
+        await store.complete_plan(plan_id)
+
+        plans = await store.get_interrupted_plans()
+        assert plans == []
+
+    @pytest.mark.asyncio
+    async def test_ignores_cancelled_plans(self, store: PlanStore):
+        """Cancelled plans are not considered interrupted."""
+        steps = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        plan_id = await store.create_plan(123, "Goal", steps)
+        await store.cancel_plan(plan_id)
+
+        plans = await store.get_interrupted_plans()
+        assert plans == []
+
+    @pytest.mark.asyncio
+    async def test_finds_multiple_interrupted_plans(self, store: PlanStore):
+        """Multiple interrupted plans across different chats are all found."""
+        steps1 = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        plan_id1 = await store.create_plan(111, "Goal 1", steps1)
+        await store.update_step_status(plan_id1, 1, "running")
+
+        steps2 = [{"pillar": "content", "action": "caption", "description": "Write"}]
+        plan_id2 = await store.create_plan(222, "Goal 2", steps2)
+        await store.update_step_status(plan_id2, 1, "running")
+
+        plans = await store.get_interrupted_plans()
+        assert len(plans) == 2
+        plan_ids = {p["plan_id"] for p in plans}
+        assert plan_id1 in plan_ids
+        assert plan_id2 in plan_ids
+
+
+class TestGetActivePlanById:
+    """Tests for PlanStore.get_active_plan_by_id."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_nonexistent(self, store: PlanStore):
+        plan = await store.get_active_plan_by_id("nonexistent-id")
+        assert plan is None
+
+    @pytest.mark.asyncio
+    async def test_returns_plan_with_steps(self, store: PlanStore):
+        steps = [
+            {"pillar": "research", "action": "trends", "description": "Research"},
+            {"pillar": "content", "action": "caption", "description": "Write"},
+        ]
+        plan_id = await store.create_plan(123, "Test goal", steps)
+
+        plan = await store.get_active_plan_by_id(plan_id)
+        assert plan is not None
+        assert plan["plan_id"] == plan_id
+        assert plan["chat_id"] == 123
+        assert plan["goal"] == "Test goal"
+        assert len(plan["steps"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_returns_completed_plan(self, store: PlanStore):
+        """Unlike get_active_plan, get_active_plan_by_id returns any plan."""
+        steps = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        plan_id = await store.create_plan(123, "Goal", steps)
+        await store.complete_plan(plan_id)
+
+        plan = await store.get_active_plan_by_id(plan_id)
+        assert plan is not None
+        assert plan["status"] == "completed"

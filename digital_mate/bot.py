@@ -181,6 +181,7 @@ class DigitalMateBot:
             self._pillars,
             planner=self._planner,
             plan_store=plan_store,
+            llm_client=llm_client,
         )
 
         self._rate_limits: TTLCache[int, RateLimitState] = TTLCache(maxsize=1000, ttl=3600)
@@ -617,6 +618,82 @@ class DigitalMateBot:
                 logger.error("Auto-calendar loop error: %s", exc, exc_info=True)
 
             await asyncio.sleep(60)
+
+    async def resume_interrupted_plans(self) -> None:
+        """On startup, check for and resume any interrupted plans.
+
+        An interrupted plan is one with status='active' that has at least
+        one step with status='running' (the bot was killed mid-execution).
+        Resets running steps to pending, notifies the user, and re-executes
+        from the first non-completed step.
+
+        This is fire-and-forget — errors are logged but never block startup.
+        """
+        if self.plan_store is None or self._orchestrator is None:
+            return
+
+        try:
+            plans = await self.plan_store.get_interrupted_plans()
+        except Exception as exc:
+            logger.error("Failed to check for interrupted plans: %s", exc)
+            return
+
+        for plan in plans:
+            chat_id = plan["chat_id"]
+            plan_id = plan["plan_id"]
+            goal = plan["goal"]
+
+            logger.info("Resuming interrupted plan %s for chat %d: %s", plan_id, chat_id, goal[:60])
+
+            # Notify user that we're resuming
+            try:
+                if self.app and self.app.bot:
+                    goal_short = goal[:50] + "..." if len(goal) > 50 else goal
+                    await self.app.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🔄 Resuming your plan: \"{goal_short}\"",
+                    )
+            except Exception as exc:
+                logger.warning("Failed to notify chat %d about plan resume: %s", chat_id, exc)
+
+            # Re-execute from first non-completed step
+            try:
+                pending_steps = [s for s in plan["steps"] if s["status"] != "completed"]
+                if not pending_steps:
+                    await self.plan_store.complete_plan(plan_id)
+                    continue
+
+                # Get brand profile for context
+                brand_profile = await self.brand_manager.get(chat_id)
+                ctx = await self.session_manager.get_context(chat_id)
+                key_facts_text = ""
+                if self.key_fact_manager:
+                    key_facts_text = await self.key_fact_manager.get_facts_context(chat_id)
+
+                # Use executor to run remaining steps
+                if self._orchestrator._executor is not None:
+                    result_text = await self._orchestrator._executor.execute(
+                        plan_id=plan_id,
+                        steps=plan["steps"],
+                        user_message=goal,
+                        context=ctx,
+                        brand_profile=brand_profile,
+                        key_facts=key_facts_text,
+                    )
+
+                    # Send result to user
+                    if self.app and self.app.bot:
+                        from digital_mate.utils.formatting import split_message
+                        for chunk in split_message(result_text):
+                            await self.app.bot.send_message(chat_id=chat_id, text=chunk)
+
+                    logger.info("Resumed and completed plan %s for chat %d", plan_id, chat_id)
+            except Exception as exc:
+                logger.error("Failed to resume plan %s for chat %d: %s", plan_id, chat_id, exc)
+                try:
+                    await self.plan_store.fail_plan(plan_id, str(exc))
+                except Exception:
+                    pass
 
     async def _cmd_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle /cancel command — cancel current operation."""
@@ -1148,6 +1225,11 @@ class DigitalMateBot:
                     )
                     if refined != response and reflection_log.get("improved"):
                         response = refined
+                        # Append reflection quality indicator
+                        initial = reflection_log.get("initial_score", 0)
+                        final = reflection_log.get("final_score", 0)
+                        if initial and final and final > initial:
+                            response += f"\n\n_✨ Auto-optimized (quality: {initial:.1f} → {final:.1f})_"
                         # Update the displayed message with the refined output
                         chunks = split_message(response)
                         if chunks and sent_messages:

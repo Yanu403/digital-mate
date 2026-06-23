@@ -763,3 +763,334 @@ class TestEdgeCases:
         update.message.reply_text.assert_called_once()
         reply_text = update.message.reply_text.call_args[0][0]
         assert "Slow down" in reply_text
+
+
+# ===========================================================================
+# 8. Reflection feedback indicator
+# ===========================================================================
+
+class TestReflectionFeedbackIndicator:
+    """Test that reflection quality indicator is appended to improved responses."""
+
+    @pytest.mark.asyncio
+    async def test_reflection_indicator_appended_on_improvement(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """When reflection improves output, indicator is appended."""
+        from digital_mate.agent.reflection import ReflectionEngine
+        from digital_mate.agent.critic import Critic
+        from digital_mate.agent.refiner import Refiner
+
+        mock_llm_client.chat_json.return_value = {
+            "pillar": "content", "action": "caption", "confidence": 0.9,
+            "language_detected": "en",
+        }
+
+        # Create a mock reflection engine that returns improvement
+        mock_reflection = MagicMock(spec=ReflectionEngine)
+        mock_reflection.reflect_and_refine = AsyncMock(
+            return_value=(
+                "Refined caption with better hook!",
+                {
+                    "iterations": 2,
+                    "initial_score": 5.0,
+                    "final_score": 8.5,
+                    "improved": True,
+                    "skipped": False,
+                },
+            )
+        )
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.reflection_engine = mock_reflection
+
+        async def _stream(*a, **kw):
+            yield "Original caption"
+
+        bot.content_pillar.handle_stream = _stream
+        bot.content_pillar.handle = AsyncMock(return_value="Original caption")
+        bot._orchestrator.execute = AsyncMock(return_value=("", False))
+
+        update = _make_update(text="Write a caption for my coffee shop")
+        ctx = _make_context()
+
+        await bot._handle_message(update, ctx)
+
+        # Check that the response contains the indicator
+        all_texts = []
+        for msg in update._sent_messages:
+            for call in msg.edit_text.call_args_list:
+                if call.args:
+                    all_texts.append(call.args[0])
+
+        combined = " ".join(all_texts)
+        assert "Auto-optimized" in combined
+        assert "5.0" in combined
+        assert "8.5" in combined
+
+    @pytest.mark.asyncio
+    async def test_reflection_no_indicator_when_not_improved(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """When reflection doesn't improve output, no indicator is added."""
+        from digital_mate.agent.reflection import ReflectionEngine
+
+        mock_llm_client.chat_json.return_value = {
+            "pillar": "content", "action": "caption", "confidence": 0.9,
+            "language_detected": "en",
+        }
+
+        mock_reflection = MagicMock(spec=ReflectionEngine)
+        mock_reflection.reflect_and_refine = AsyncMock(
+            return_value=(
+                "Original caption",
+                {
+                    "iterations": 1,
+                    "initial_score": 8.0,
+                    "final_score": 8.0,
+                    "improved": False,
+                    "skipped": False,
+                },
+            )
+        )
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.reflection_engine = mock_reflection
+
+        async def _stream(*a, **kw):
+            yield "Original caption"
+
+        bot.content_pillar.handle_stream = _stream
+        bot.content_pillar.handle = AsyncMock(return_value="Original caption")
+        bot._orchestrator.execute = AsyncMock(return_value=("", False))
+
+        update = _make_update(text="Write a caption")
+        ctx = _make_context()
+
+        await bot._handle_message(update, ctx)
+
+        all_texts = []
+        for msg in update._sent_messages:
+            for call in msg.edit_text.call_args_list:
+                if call.args:
+                    all_texts.append(call.args[0])
+
+        combined = " ".join(all_texts)
+        assert "Auto-optimized" not in combined
+
+    @pytest.mark.asyncio
+    async def test_reflection_failure_non_blocking(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """When reflection fails, original response is still sent."""
+        from digital_mate.agent.reflection import ReflectionEngine
+
+        mock_llm_client.chat_json.return_value = {
+            "pillar": "content", "action": "caption", "confidence": 0.9,
+            "language_detected": "en",
+        }
+
+        mock_reflection = MagicMock(spec=ReflectionEngine)
+        mock_reflection.reflect_and_refine = AsyncMock(
+            side_effect=RuntimeError("Reflection service down")
+        )
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.reflection_engine = mock_reflection
+
+        async def _stream(*a, **kw):
+            yield "Original caption text"
+
+        bot.content_pillar.handle_stream = _stream
+        bot.content_pillar.handle = AsyncMock(return_value="Original caption text")
+        bot._orchestrator.execute = AsyncMock(return_value=("", False))
+
+        update = _make_update(text="Write a caption")
+        ctx = _make_context()
+
+        # Should NOT raise
+        await bot._handle_message(update, ctx)
+
+        # Original response should still be present
+        all_texts = []
+        for msg in update._sent_messages:
+            for call in msg.edit_text.call_args_list:
+                if call.args:
+                    all_texts.append(call.args[0])
+
+        combined = " ".join(all_texts)
+        assert "Original caption text" in combined
+
+    @pytest.mark.asyncio
+    async def test_reflection_skipped_for_general_pillar(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """Reflection is not triggered for general pillar messages."""
+        mock_llm_client.chat_json.return_value = {
+            "pillar": "general", "action": "chitchat", "confidence": 0.9,
+            "language_detected": "en",
+        }
+        mock_llm_client.chat.return_value = "Hello there!"
+
+        mock_reflection = MagicMock()
+        mock_reflection.reflect_and_refine = AsyncMock()
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.reflection_engine = mock_reflection
+
+        update = _make_update(text="Hi!")
+        ctx = _make_context()
+
+        await bot._handle_message(update, ctx)
+
+        mock_reflection.reflect_and_refine.assert_not_called()
+
+
+# ===========================================================================
+# 9. Plan resume on startup
+# ===========================================================================
+
+class TestPlanResumeOnStartup:
+    """Test that interrupted plans are resumed on bot startup."""
+
+    @pytest.mark.asyncio
+    async def test_resume_interrupted_plans_notifies_user(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """Bot should send a notification when resuming interrupted plans."""
+        from digital_mate.agent.plan_store import PlanStore
+        from digital_mate.memory.database import init_memory_db
+
+        db = await init_memory_db()
+        plan_store = PlanStore(db)
+
+        # Create a plan with a running step (simulating interrupted state)
+        steps = [
+            {"pillar": "research", "action": "trends", "description": "Research trends"},
+            {"pillar": "content", "action": "caption", "description": "Write caption"},
+        ]
+        plan_id = await plan_store.create_plan(123, "Launch campaign", steps)
+        # Mark step 1 as running (simulating interruption)
+        await plan_store.update_step_status(plan_id, 1, "running")
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.plan_store = plan_store
+        bot._planner = MagicMock()
+
+        # Mock app.bot.send_message
+        mock_send = AsyncMock()
+        bot.app = MagicMock()
+        bot.app.bot = MagicMock()
+        bot.app.bot.send_message = mock_send
+
+        # Mock executor
+        mock_executor = AsyncMock()
+        mock_executor.execute = AsyncMock(return_value="Plan resumed and completed")
+        bot._orchestrator._executor = mock_executor
+
+        await bot.resume_interrupted_plans()
+
+        # Should have sent a notification
+        mock_send.assert_called()
+        call_text = mock_send.call_args_list[0].kwargs.get(
+            "text", mock_send.call_args_list[0].args[1] if len(mock_send.call_args_list[0].args) > 1 else ""
+        )
+        assert "Resuming" in call_text
+
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_resets_running_steps_to_pending(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """Running steps should be reset to pending before resume."""
+        from digital_mate.agent.plan_store import PlanStore
+        from digital_mate.memory.database import init_memory_db
+
+        db = await init_memory_db()
+        plan_store = PlanStore(db)
+
+        steps = [
+            {"pillar": "research", "action": "trends", "description": "Research"},
+        ]
+        plan_id = await plan_store.create_plan(123, "Goal", steps)
+        await plan_store.update_step_status(plan_id, 1, "running")
+
+        # Verify it's running
+        plan = await plan_store.get_active_plan(123)
+        assert plan["steps"][0]["status"] == "running"
+
+        # get_interrupted_plans should reset to pending
+        plans = await plan_store.get_interrupted_plans()
+        assert len(plans) == 1
+        assert plans[0]["steps"][0]["status"] == "pending"
+
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_when_no_plan_store(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """resume_interrupted_plans should bail out if plan_store is None."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.plan_store = None
+
+        # Should NOT raise
+        await bot.resume_interrupted_plans()
+
+    @pytest.mark.asyncio
+    async def test_resume_handles_no_interrupted_plans(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """resume_interrupted_plans should do nothing when no interrupted plans exist."""
+        from digital_mate.agent.plan_store import PlanStore
+        from digital_mate.memory.database import init_memory_db
+
+        db = await init_memory_db()
+        plan_store = PlanStore(db)
+
+        bot = _make_bot(sample_settings, mock_llm_client)
+        bot.plan_store = plan_store
+        bot._planner = MagicMock()
+
+        bot.app = MagicMock()
+        bot.app.bot = MagicMock()
+        bot.app.bot.send_message = AsyncMock()
+
+        # No plans exist — should do nothing
+        await bot.resume_interrupted_plans()
+
+        bot.app.bot.send_message.assert_not_called()
+        await db.close()
+
+    @pytest.mark.asyncio
+    async def test_get_interrupted_plans_finds_correct_plans(
+        self, sample_settings, mock_llm_client,
+    ) -> None:
+        """get_interrupted_plans should only find plans with running steps."""
+        from digital_mate.agent.plan_store import PlanStore
+        from digital_mate.memory.database import init_memory_db
+
+        db = await init_memory_db()
+        plan_store = PlanStore(db)
+
+        # Plan 1: has a running step (interrupted)
+        steps1 = [{"pillar": "research", "action": "trends", "description": "Research"}]
+        plan_id1 = await plan_store.create_plan(111, "Goal 1", steps1)
+        await plan_store.update_step_status(plan_id1, 1, "running")
+
+        # Plan 2: all pending (not interrupted)
+        steps2 = [{"pillar": "content", "action": "caption", "description": "Write"}]
+        await plan_store.create_plan(222, "Goal 2", steps2)
+
+        # Plan 3: completed (not interrupted)
+        steps3 = [{"pillar": "strategy", "action": "plan", "description": "Plan"}]
+        plan_id3 = await plan_store.create_plan(333, "Goal 3", steps3)
+        await plan_store.complete_plan(plan_id3)
+
+        plans = await plan_store.get_interrupted_plans()
+        assert len(plans) == 1
+        assert plans[0]["plan_id"] == plan_id1
+        assert plans[0]["chat_id"] == 111
+
+        await db.close()
