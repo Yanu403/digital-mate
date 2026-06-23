@@ -548,7 +548,14 @@ class LLMClient:
                     raise LLMError("LLM returned empty JSON response.")
 
                 try:
-                    parsed = json.loads(content)
+                    # Strip markdown code fences if present (some providers
+                    # wrap JSON in ```json ... ``` despite response_format)
+                    stripped = content.strip()
+                    if stripped.startswith("```"):
+                        import re
+                        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+                        stripped = re.sub(r"\s*```$", "", stripped.strip())
+                    parsed = json.loads(stripped)
                 except json.JSONDecodeError as exc:
                     last_error = exc
                     logger.warning("JSON decode failed (attempt %d/%d): %s", attempt + 1, self.max_retries, exc)
