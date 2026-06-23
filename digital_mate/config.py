@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(..., min_length=1)
     llm_model: str = "gpt-4o"
     llm_router_model: str = ""
+    llm_timeout: float = Field(default=120.0, gt=0, description="LLM API read timeout in seconds")
+    llm_max_retries: int = Field(default=3, ge=1, le=10, description="Max retry attempts for LLM calls")
+    llm_stale_timeout: float = Field(default=30.0, gt=0, description="Seconds without data before killing a stream")
 
     # --- Notion (optional) ---
     notion_api_key: str | None = None

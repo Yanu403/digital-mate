@@ -106,6 +106,9 @@ async def _run_bot() -> None:
         api_key=settings.llm_api_key,
         model=settings.llm_model,
         router_model=settings.router_model_effective,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
+        stale_timeout=settings.llm_stale_timeout,
     )
 
     router = IntentRouter(

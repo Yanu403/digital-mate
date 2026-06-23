@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -511,10 +512,14 @@ class DigitalMateBot:
         while True:
             try:
                 now = datetime.now()
-                due_subs = await self.autocalendar_manager.get_due_subscriptions(
-                    day_of_week=now.weekday(),
-                    hour=now.hour,
-                )
+                all_subs = await self.autocalendar_manager.get_enabled_subscriptions()
+                # Filter to subscriptions due now (matching day + hour, not already run today)
+                due_subs = [
+                    sub for sub in all_subs
+                    if sub.day_of_week == now.weekday()
+                    and sub.hour == now.hour
+                    and sub.last_run_at != now.strftime("%Y-%m-%d")
+                ]
                 for sub in due_subs:
                     logger.info("Auto-calendar: generating for chat %d", sub.chat_id)
                     try:
@@ -738,28 +743,76 @@ class DigitalMateBot:
                 await update.message.reply_text("⏳ Slow down a bit! Try again in a moment.")
                 return
 
-            # Handle general intents directly
+            # Send a placeholder that we'll progressively edit as tokens stream in.
+            # For general (chitchat/help/brand) intents the response is short, so
+            # we fall back to the non-streaming _handle_general path and do a
+            # single edit. For pillar intents we stream via handle_stream().
+            placeholder = await update.message.reply_text(
+                "⏳ _Thinking..._", parse_mode=ParseMode.MARKDOWN
+            )
+
             pillar = None
+            sent_messages: list = [placeholder]  # track messages we may attach buttons to
             if result.is_general:
                 response = await self._handle_general(user_message, result, ctx, brand_profile)
+                # Edit the placeholder with the final (possibly long) response.
+                chunks = split_message(response)
+                if chunks:
+                    try:
+                        await placeholder.edit_text(chunks[0])
+                    except Exception as exc:
+                        logger.warning("edit_text failed for general response: %s", exc)
+                    for extra in chunks[1:]:
+                        sent_messages.append(
+                            await update.message.reply_text(extra)
+                        )
             else:
-                # Dispatch to pillar
+                # Dispatch to pillar — stream tokens into the placeholder.
                 pillar = self._pillars.get(result.pillar)
-                if pillar:
+                if pillar and hasattr(pillar, "handle_stream"):
+                    response = await self._stream_pillar_response(
+                        update, placeholder, sent_messages, pillar,
+                        user_message=user_message,
+                        action=result.action,
+                        context=ctx,
+                        brand_profile=brand_profile,
+                    )
+                elif pillar:
+                    # Fallback: pillar has no handle_stream — use non-streaming handle.
                     response = await pillar.handle(
                         user_message=user_message,
                         action=result.action,
                         context=ctx,
                         brand_profile=brand_profile,
                     )
+                    chunks = split_message(response)
+                    if chunks:
+                        try:
+                            await placeholder.edit_text(chunks[0])
+                        except Exception as exc:
+                            logger.warning("edit_text failed for pillar response: %s", exc)
+                        for extra in chunks[1:]:
+                            sent_messages.append(
+                                await update.message.reply_text(extra)
+                            )
                 else:
                     response = "🤔 I'm not sure how to help with that. Try asking about content, strategy, research, or analytics!"
+                    try:
+                        await placeholder.edit_text(response)
+                    except Exception as exc:
+                        logger.warning("edit_text failed for fallback response: %s", exc)
 
             # Security: check output for prompt leaks
             out_guard = output_guard(response)
             if not out_guard.is_safe:
                 logger.warning("Output guard triggered for chat %d: %s", chat_id, out_guard.threat_type)
                 response = out_guard.content
+                # Overwrite the last sent message with the sanitized content.
+                last_msg = sent_messages[-1] if sent_messages else placeholder
+                try:
+                    await last_msg.edit_text(response)
+                except Exception as exc:
+                    logger.warning("edit_text failed for output-guarded response: %s", exc)
 
             # Save to session context
             await self.session_manager.add_message(chat_id, "user", user_message)
@@ -790,20 +843,106 @@ class DigitalMateBot:
                     logger.warning("Failed to store response for feedback: %s", exc)
                     log_id = None
 
-            # Send response (split if too long)
-            chunks = split_message(response)
-            for idx, chunk in enumerate(chunks):
-                is_last = idx == len(chunks) - 1
-                reply_markup = None
-                if attach_feedback and log_id is not None and is_last:
-                    reply_markup = feedback_keyboard(log_id)
-                await update.message.reply_text(chunk, reply_markup=reply_markup)
+            # Attach the feedback keyboard to the LAST message we sent. During
+            # streaming the last message is the final edited placeholder (or the
+            # last overflow chunk); for the non-streaming path it's the last
+            # split chunk. We edit it to attach the inline keyboard.
+            if attach_feedback and log_id is not None and sent_messages:
+                last_msg = sent_messages[-1]
+                try:
+                    await last_msg.edit_text(
+                        split_message(response)[-1] if len(sent_messages) > 1 else response,
+                        reply_markup=feedback_keyboard(log_id),
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to attach feedback keyboard: %s", exc)
 
         except Exception as exc:
             logger.error("Error handling message from chat %d: %s", chat_id, exc, exc_info=True)
             await update.message.reply_text(
                 "⚠️ Sorry, something went wrong processing your message. Please try again!"
             )
+
+    async def _stream_pillar_response(
+        self,
+        update: Update,
+        placeholder: Any,
+        sent_messages: list,
+        pillar: Any,
+        *,
+        user_message: str,
+        action: str,
+        context: list[dict[str, str]],
+        brand_profile: BrandProfile | None,
+    ) -> str:
+        """Stream a pillar response into the placeholder message.
+
+        Accumulates chunks from ``pillar.handle_stream()`` and progressively
+        edits the placeholder. Throttles edits to roughly one per second (or
+        every ~200 chars). If the buffer exceeds 4000 chars (Telegram's 4096
+        limit), the current buffer is flushed as a new message and a fresh
+        buffer starts. On completion the final buffer is edited into the last
+        message. If an LLM error occurs mid-stream, the placeholder is edited
+        with the error text.
+
+        Args:
+            update: The Telegram Update (used to send overflow messages).
+            placeholder: The initial "⏳ Thinking..." message to edit.
+            sent_messages: List tracking all messages sent (appended in place);
+                the last entry is where the feedback keyboard will land.
+            pillar: The pillar instance to stream from.
+            user_message: The user's message text.
+            action: The classified action.
+            context: Conversation context.
+            brand_profile: Optional brand profile.
+
+        Returns:
+            The full accumulated response text.
+        """
+        buffer = ""
+        last_edit = time.monotonic()
+        current_msg = placeholder
+        TELEGRAM_LIMIT = 4000
+        EDIT_INTERVAL = 1.0
+        EDIT_CHAR_INTERVAL = 200
+
+        async for chunk in pillar.handle_stream(
+            user_message=user_message,
+            action=action,
+            context=context,
+            brand_profile=brand_profile,
+        ):
+            buffer += chunk
+            now = time.monotonic()
+            # Flush if we're about to exceed Telegram's message limit.
+            if len(buffer) >= TELEGRAM_LIMIT:
+                try:
+                    await current_msg.edit_text(buffer[:TELEGRAM_LIMIT])
+                except Exception as exc:
+                    logger.warning("edit_text overflow flush failed: %s", exc)
+                overflow = buffer[TELEGRAM_LIMIT:]
+                current_msg = await update.message.reply_text(overflow)
+                sent_messages.append(current_msg)
+                buffer = overflow
+                last_edit = now
+                continue
+            # Throttle edits: at most ~1/sec or every ~200 chars.
+            if (now - last_edit >= EDIT_INTERVAL) or (len(buffer) % EDIT_CHAR_INTERVAL < len(chunk)):
+                try:
+                    await current_msg.edit_text(buffer)
+                except Exception as exc:
+                    # "message is not modified" is harmless during rapid edits.
+                    logger.debug("progressive edit_text skipped: %s", exc)
+                last_edit = now
+
+        # Final edit with the complete buffer for the current message.
+        if buffer:
+            try:
+                await current_msg.edit_text(buffer)
+            except Exception as exc:
+                logger.debug("final edit_text skipped: %s", exc)
+
+        return buffer
 
     async def _handle_general(
         self,

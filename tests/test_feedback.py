@@ -28,11 +28,28 @@ from digital_mate.utils.keyboards import feedback_keyboard
 # ---------------------------------------------------------------------------
 
 def _make_update(chat_id: int = 123456789, text: str = "test message") -> AsyncMock:
-    """Create a mock Telegram Update object for a text message."""
+    """Create a mock Telegram Update object for a text message.
+
+    ``reply_text`` returns a mock Message that also has ``edit_text``
+    so streaming code can progressively edit the placeholder.
+    The list ``update._sent_messages`` tracks all messages created.
+    Mirrors the helper used in tests/test_bot.py.
+    """
     update = AsyncMock()
     update.effective_chat.id = chat_id
     update.message.text = text
-    update.message.reply_text = AsyncMock()
+
+    sent_messages: list[AsyncMock] = []
+    update._sent_messages = sent_messages
+
+    def _make_msg() -> AsyncMock:
+        msg = AsyncMock()
+        msg.edit_text = AsyncMock()
+        msg.reply_text = AsyncMock()
+        sent_messages.append(msg)
+        return msg
+
+    update.message.reply_text = AsyncMock(side_effect=lambda *a, **kw: _make_msg())
     update.message.chat.send_action = AsyncMock()
     return update
 
@@ -344,17 +361,24 @@ class TestFeedbackAttachment:
         }
         bot = _make_bot(sample_settings, mock_llm_client, response_store=store)
         bot.content_pillar.handle = AsyncMock(return_value="Here's your caption!")
+
+        async def _stream(*a, **kw):
+            yield "Here's your caption!"
+        bot.content_pillar.handle_stream = _stream
+
         update = _make_update(text="Write me a caption")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
 
-        # The last reply_text call should include a reply_markup
-        calls = update.message.reply_text.call_args_list
-        assert len(calls) > 0
-        last_call_kwargs = calls[-1].kwargs
-        assert "reply_markup" in last_call_kwargs
-        assert last_call_kwargs["reply_markup"] is not None
+        # The feedback keyboard is attached via edit_text on the last sent
+        # message (the streaming placeholder), not via reply_text kwargs.
+        assert update._sent_messages, "expected at least one sent message"
+        last_msg = update._sent_messages[-1]
+        assert last_msg.edit_text.called, "expected edit_text to be called on last message"
+        last_edit_kwargs = last_msg.edit_text.call_args_list[-1].kwargs
+        assert "reply_markup" in last_edit_kwargs
+        assert last_edit_kwargs["reply_markup"] is not None
 
     @pytest.mark.asyncio
     async def test_general_chitchat_no_keyboard(
@@ -452,18 +476,27 @@ class TestFeedbackAttachment:
         long_response = "A" * 5000
         bot = _make_bot(sample_settings, mock_llm_client, response_store=store)
         bot.content_pillar.handle = AsyncMock(return_value=long_response)
+
+        async def _stream(*a, **kw):
+            yield long_response
+        bot.content_pillar.handle_stream = _stream
+
         update = _make_update(text="Write a long caption")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
 
-        calls = update.message.reply_text.call_args_list
-        assert len(calls) >= 2  # at least 2 chunks
-        # All chunks except the last should have NO reply_markup
-        for call in calls[:-1]:
-            assert call.kwargs.get("reply_markup") is None
-        # The last chunk should have a reply_markup
-        assert calls[-1].kwargs.get("reply_markup") is not None
+        # Streaming splits long responses across multiple sent messages.
+        # The feedback keyboard is attached via edit_text on the LAST sent
+        # message only.
+        assert len(update._sent_messages) >= 2  # at least 2 chunks
+        # All messages except the last should have NO reply_markup on edit_text
+        for msg in update._sent_messages[:-1]:
+            for call in msg.edit_text.call_args_list:
+                assert call.kwargs.get("reply_markup") is None
+        # The last message should have a reply_markup on its final edit_text
+        last_msg = update._sent_messages[-1]
+        assert last_msg.edit_text.call_args_list[-1].kwargs.get("reply_markup") is not None
 
     @pytest.mark.asyncio
     async def test_store_records_response(
@@ -477,6 +510,11 @@ class TestFeedbackAttachment:
         }
         bot = _make_bot(sample_settings, mock_llm_client, response_store=store)
         bot.content_pillar.handle = AsyncMock(return_value="caption text")
+
+        async def _stream(*a, **kw):
+            yield "caption text"
+        bot.content_pillar.handle_stream = _stream
+
         update = _make_update(chat_id=555555, text="Write me a caption")
         ctx = _make_context()
 
@@ -688,13 +726,21 @@ class TestBackwardCompatibility:
         }
         bot = _make_bot(sample_settings, mock_llm_client, response_store=None)
         bot.content_pillar.handle = AsyncMock(return_value="caption!")
+
+        async def _stream(*a, **kw):
+            yield "caption!"
+        bot.content_pillar.handle_stream = _stream
+
         update = _make_update(text="Write me a caption")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
 
-        bot.content_pillar.handle.assert_awaited_once()
+        # With streaming, handle_stream is used (not handle). The response
+        # is delivered via edit_text on the placeholder message.
         update.message.reply_text.assert_called()
+        assert update._sent_messages, "expected at least one sent message"
+        assert update._sent_messages[0].edit_text.called
 
     @pytest.mark.asyncio
     async def test_general_works_without_store(

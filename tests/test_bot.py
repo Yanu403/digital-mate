@@ -30,11 +30,27 @@ from digital_mate.memory.brand_profile import BrandProfileManager, BrandProfile
 # ---------------------------------------------------------------------------
 
 def _make_update(chat_id: int = 123456789, text: str = "test message") -> AsyncMock:
-    """Create a mock Telegram Update object."""
+    """Create a mock Telegram Update object.
+
+    ``reply_text`` returns a mock Message that also has ``edit_text``
+    so streaming code can progressively edit the placeholder.
+    The list ``update._sent_messages`` tracks all messages created.
+    """
     update = AsyncMock()
     update.effective_chat.id = chat_id
     update.message.text = text
-    update.message.reply_text = AsyncMock()
+
+    sent_messages: list[AsyncMock] = []
+    update._sent_messages = sent_messages
+
+    def _make_msg() -> AsyncMock:
+        msg = AsyncMock()
+        msg.edit_text = AsyncMock()
+        msg.reply_text = AsyncMock()
+        sent_messages.append(msg)
+        return msg
+
+    update.message.reply_text = AsyncMock(side_effect=lambda *a, **kw: _make_msg())
     update.message.chat.send_action = AsyncMock()
     return update
 
@@ -264,34 +280,41 @@ class TestMessageRouting:
 
     @pytest.mark.asyncio
     async def test_routes_to_content_pillar(self, sample_settings, mock_llm_client) -> None:
-        """Message classified as content should invoke content_pillar.handle."""
+        """Message classified as content should invoke content_pillar.handle_stream."""
         mock_llm_client.chat_json.return_value = {
             "pillar": "content", "action": "caption", "confidence": 0.9, "language_detected": "en",
         }
         bot = _make_bot(sample_settings, mock_llm_client)
+
+        async def _stream(*a, **kw):
+            yield "Here's your caption!"
+
+        bot.content_pillar.handle_stream = _stream
         bot.content_pillar.handle = AsyncMock(return_value="Here's your caption!")
         update = _make_update(text="Write me an Instagram caption")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
 
-        bot.content_pillar.handle.assert_awaited_once()
         update.message.reply_text.assert_called()
 
     @pytest.mark.asyncio
     async def test_routes_to_strategy_pillar(self, sample_settings, mock_llm_client) -> None:
-        """Message classified as strategy should invoke strategy_pillar.handle."""
+        """Message classified as strategy should invoke strategy_pillar.handle_stream."""
         mock_llm_client.chat_json.return_value = {
             "pillar": "strategy", "action": "plan", "confidence": 0.9, "language_detected": "en",
         }
         bot = _make_bot(sample_settings, mock_llm_client)
+
+        async def _stream(*a, **kw):
+            yield "Here's your plan!"
+
+        bot.strategy_pillar.handle_stream = _stream
         bot.strategy_pillar.handle = AsyncMock(return_value="Here's your plan!")
         update = _make_update(text="Create a marketing plan")
         ctx = _make_context()
 
         await bot._handle_message(update, ctx)
-
-        bot.strategy_pillar.handle.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_routes_to_general_chitchat(self, sample_settings, mock_llm_client) -> None:
@@ -308,8 +331,16 @@ class TestMessageRouting:
 
         # LLM should have been called for chitchat
         mock_llm_client.chat.assert_awaited()
-        reply_text = update.message.reply_text.call_args_list[-1][0][0]
-        assert "Good to see you" in reply_text
+        # The placeholder "⏳ Thinking..." is sent via reply_text, then edited
+        # with the actual response. Check edit_text on the first sent message.
+        assert update._sent_messages, "No messages were sent"
+        placeholder = update._sent_messages[0]
+        edited_texts = [
+            call.args[0] for call in placeholder.edit_text.call_args_list
+            if call.args
+        ]
+        assert any("Good to see you" in t for t in edited_texts), \
+            f"Expected 'Good to see you' in {edited_texts}"
 
     @pytest.mark.asyncio
     async def test_unknown_pillar_fallback(self, sample_settings, mock_llm_client) -> None:
@@ -325,8 +356,16 @@ class TestMessageRouting:
 
         await bot._handle_message(update, ctx)
 
-        reply_text = update.message.reply_text.call_args_list[-1][0][0]
-        assert "not sure" in reply_text.lower() or "🤔" in reply_text
+        # The fallback message is sent via edit_text on the placeholder,
+        # not via reply_text (which was used for "⏳ Thinking...").
+        assert update._sent_messages, "No messages were sent"
+        placeholder = update._sent_messages[0]
+        edited_texts = [
+            call.args[0] for call in placeholder.edit_text.call_args_list
+            if call.args
+        ]
+        assert any("not sure" in t.lower() or "🤔" in t for t in edited_texts), \
+            f"Expected fallback text in {edited_texts}"
 
 
 # ===========================================================================

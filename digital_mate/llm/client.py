@@ -1,6 +1,12 @@
 """Async LLM client using OpenAI-compatible API.
 
-Provides retry logic with exponential backoff and structured JSON responses.
+Provides retry logic with jittered backoff, structured JSON responses,
+and streaming support for real-time token delivery.
+
+Retry strategy adopted from Hermes' jittered_backoff pattern:
+decorrelated exponential backoff with random jitter to prevent
+thundering-herd retry spikes when multiple users hit the same API
+concurrently.
 """
 
 from __future__ import annotations
@@ -8,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
+import random
+import time
+from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI, APIError, APITimeoutError, APIConnectionError
 
@@ -17,14 +25,44 @@ logger = logging.getLogger(__name__)
 
 class LLMError(Exception):
     """Raised when LLM request fails after all retries."""
-
     pass
+
+
+def _jittered_backoff(
+    attempt: int,
+    *,
+    base_delay: float = 2.0,
+    max_delay: float = 30.0,
+    jitter_ratio: float = 0.5,
+) -> float:
+    """Compute a jittered exponential backoff delay.
+
+    Mirrors Hermes' retry_utils.jittered_backoff — decorrelated
+    delays prevent thundering-herd retry spikes.
+
+    Args:
+        attempt: 1-based retry attempt number.
+        base_delay: Base delay in seconds for attempt 1.
+        max_delay: Maximum delay cap in seconds.
+        jitter_ratio: Fraction of delay used as random jitter range.
+
+    Returns:
+        Delay in seconds: min(base * 2^(attempt-1), max_delay) + jitter.
+    """
+    exponent = max(0, attempt - 1)
+    if exponent >= 63 or base_delay <= 0:
+        delay = max_delay
+    else:
+        delay = min(base_delay * (2 ** exponent), max_delay)
+    jitter = random.uniform(0, jitter_ratio * delay)
+    return delay + jitter
 
 
 class LLMClient:
     """Async wrapper around OpenAI-compatible chat completions API.
 
-    Supports standard chat and JSON-mode responses with automatic retry.
+    Supports standard chat, streaming chat, and JSON-mode responses
+    with automatic retry using jittered backoff.
     """
 
     def __init__(
@@ -34,7 +72,8 @@ class LLMClient:
         model: str,
         router_model: str | None = None,
         max_retries: int = 3,
-        timeout: float = 60.0,
+        timeout: float = 120.0,
+        stale_timeout: float = 30.0,
     ) -> None:
         """Initialize the LLM client.
 
@@ -44,7 +83,8 @@ class LLMClient:
             model: Default model to use for chat completions.
             router_model: Model to use for routing (defaults to model).
             max_retries: Maximum number of retry attempts.
-            timeout: Request timeout in seconds.
+            timeout: Request timeout in seconds (read timeout for streaming).
+            stale_timeout: Seconds without any data before killing a stream.
         """
         self._client = AsyncOpenAI(
             base_url=base_url,
@@ -54,6 +94,12 @@ class LLMClient:
         self.model = model
         self.router_model = router_model or model
         self.max_retries = max_retries
+        self.timeout = timeout
+        self.stale_timeout = stale_timeout
+
+    # ------------------------------------------------------------------
+    # Non-streaming chat
+    # ------------------------------------------------------------------
 
     async def chat(
         self,
@@ -76,28 +122,32 @@ class LLMClient:
         Raises:
             LLMError: If the request fails after all retries.
         """
-        model = model or self.model
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
                 response = await self._client.chat.completions.create(
-                    model=model,
+                    model=model or self.model,
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
                 content = response.choices[0].message.content
-                if content is None:
+                if not content or not content.strip():
                     raise LLMError("LLM returned empty response.")
-                logger.debug("LLM response (%d tokens): %.100s...", len(content), content)
                 return content.strip()
 
             except (APITimeoutError, APIConnectionError) as exc:
                 last_error = exc
-                wait = 2**attempt  # 1s, 2s, 4s
-                logger.warning("LLM request failed (attempt %d/%d): %s — retrying in %ds", attempt + 1, self.max_retries, exc, wait)
-                await asyncio.sleep(wait)
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM request failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM request timed out after %d attempts: %s", self.max_retries, exc)
 
             except APIError as exc:
                 last_error = exc
@@ -111,57 +161,178 @@ class LLMClient:
 
         raise LLMError(f"LLM request failed after {self.max_retries} attempts: {last_error}")
 
-    async def chat_json(
+    # ------------------------------------------------------------------
+    # Streaming chat
+    # ------------------------------------------------------------------
+
+    async def chat_stream(
         self,
         messages: list[dict[str, str]],
-        temperature: float = 0.2,
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
         model: str | None = None,
-    ) -> dict[str, Any]:
-        """Send a chat request expecting a JSON response.
+    ) -> AsyncIterator[str]:
+        """Stream a chat completion, yielding text chunks as they arrive.
 
-        Uses response_format={"type": "json_object"} for structured output.
+        Uses stream=True so the first token arrives as soon as the
+        model starts generating, rather than waiting for the full
+        response.  Includes a stale-call detector: if no chunk arrives
+        within ``stale_timeout`` seconds, the connection is killed and
+        retried.
 
         Args:
             messages: List of message dicts with 'role' and 'content'.
-            temperature: Sampling temperature (low for JSON).
-            model: Override model (defaults to self.router_model).
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens in the response.
+            model: Override model (defaults to self.model).
 
-        Returns:
-            Parsed JSON dict from the response.
+        Yields:
+            Text chunks (delta content) as they arrive from the API.
 
         Raises:
-            LLMError: If the request fails or response is not valid JSON.
+            LLMError: If the request fails after all retries.
         """
-        model = model or self.router_model
         last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.chat.completions.create(
-                    model=model,
+                stream = await self._client.chat.completions.create(
+                    model=model or self.model,
                     messages=messages,
                     temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+
+                last_chunk_time = time.monotonic()
+                got_any_chunk = False
+
+                async for chunk in stream:
+                    now = time.monotonic()
+                    # Stale detection: no data for stale_timeout seconds
+                    if now - last_chunk_time > self.stale_timeout:
+                        logger.warning(
+                            "Stream stale for %.0fs (threshold %.0fs) — killing and retrying (attempt %d/%d)",
+                            now - last_chunk_time, self.stale_timeout,
+                            attempt + 1, self.max_retries,
+                        )
+                        raise _StaleStreamError()
+
+                    last_chunk_time = now
+
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        got_any_chunk = True
+                        yield chunk.choices[0].delta.content
+
+                # Stream completed successfully
+                if not got_any_chunk:
+                    logger.warning("Stream completed but produced no content (attempt %d/%d)", attempt + 1, self.max_retries)
+                    # Don't raise — might be an empty-but-valid response
+                return
+
+            except _StaleStreamError:
+                # Retry with backoff
+                last_error = Exception("Stream stale — no data received within timeout")
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning("Retrying stale stream in %.1fs (attempt %d/%d)", wait, attempt + 1, self.max_retries)
+                    await asyncio.sleep(wait)
+                continue
+
+            except (APITimeoutError, APIConnectionError) as exc:
+                last_error = exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM stream failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM stream timed out after %d attempts: %s", self.max_retries, exc)
+
+            except APIError as exc:
+                last_error = exc
+                logger.error("LLM API error (stream): %s", exc)
+                raise LLMError(f"AI service error: {exc.message}") from exc
+
+            except Exception as exc:
+                last_error = exc
+                logger.error("Unexpected LLM stream error: %s", exc)
+                raise LLMError("An unexpected error occurred while contacting the AI service.") from exc
+
+        raise LLMError(f"LLM stream failed after {self.max_retries} attempts: {last_error}")
+
+    # ------------------------------------------------------------------
+    # JSON-mode chat (for router classification)
+    # ------------------------------------------------------------------
+
+    async def chat_json(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.3,
+        max_tokens: int = 512,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a chat completion request expecting a JSON response.
+
+        Uses response_format={"type": "json_object"} to enforce JSON output.
+
+        Args:
+            messages: List of message dicts with 'role' and 'content'.
+            temperature: Sampling temperature (low for classification).
+            max_tokens: Maximum tokens in the response.
+            model: Override model (defaults to router_model for JSON calls).
+
+        Returns:
+            Parsed JSON dict.
+
+        Raises:
+            LLMError: If the request fails or response is not valid JSON.
+        """
+        last_error: Exception | None = None
+        use_model = model or self.router_model
+
+        for attempt in range(self.max_retries):
+            try:
+                response = await self._client.chat.completions.create(
+                    model=use_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                     response_format={"type": "json_object"},
                 )
                 content = response.choices[0].message.content
-                if content is None:
+                if not content or not content.strip():
                     raise LLMError("LLM returned empty JSON response.")
-                parsed = json.loads(content)
+
+                try:
+                    parsed = json.loads(content)
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    logger.warning("JSON decode failed (attempt %d/%d): %s", attempt + 1, self.max_retries, exc)
+                    if attempt < self.max_retries - 1:
+                        wait = _jittered_backoff(attempt + 1)
+                        await asyncio.sleep(wait)
+                    continue
+
                 if not isinstance(parsed, dict):
                     raise LLMError("LLM returned non-object JSON response.")
                 logger.debug("LLM JSON response: %.200s", content)
                 return parsed
 
-            except json.JSONDecodeError as exc:
-                last_error = exc
-                logger.warning("LLM returned invalid JSON (attempt %d/%d): %s", attempt + 1, self.max_retries, exc)
-                await asyncio.sleep(2**attempt)
-
             except (APITimeoutError, APIConnectionError) as exc:
                 last_error = exc
-                wait = 2**attempt
-                logger.warning("LLM JSON request failed (attempt %d/%d): %s — retrying in %ds", attempt + 1, self.max_retries, exc, wait)
-                await asyncio.sleep(wait)
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM JSON request failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM JSON request timed out after %d attempts: %s", self.max_retries, exc)
 
             except APIError as exc:
                 last_error = exc
@@ -177,3 +348,8 @@ class LLMClient:
                 raise LLMError("An unexpected error occurred while contacting the AI service.") from exc
 
         raise LLMError(f"LLM JSON request failed after {self.max_retries} attempts: {last_error}")
+
+
+class _StaleStreamError(Exception):
+    """Internal sentinel raised when a stream goes stale (no data for N seconds)."""
+    pass
