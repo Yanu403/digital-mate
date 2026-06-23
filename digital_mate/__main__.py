@@ -88,8 +88,14 @@ async def _run_bot() -> None:
     from digital_mate.memory.autocalendar import AutoCalendarManager
     from digital_mate.memory.response_store import ResponseStore
     from digital_mate.agent.plan_store import PlanStore
+    from digital_mate.agent.critic import Critic
+    from digital_mate.agent.refiner import Refiner
+    from digital_mate.agent.reflection import ReflectionEngine
+    from digital_mate.agent.triggers import TriggerEngine
+    from digital_mate.agent.scheduler import WorkflowScheduler
     from digital_mate.integrations.notion_client import NotionService
     from digital_mate.integrations.search import SearchService
+    from digital_mate.utils.formatting import split_message
     from digital_mate.bot import DigitalMateBot
 
     logger = logging.getLogger(__name__)
@@ -143,6 +149,17 @@ async def _run_bot() -> None:
     search_service = SearchService(tavily_api_key=settings.tavily_api_key)
     logger.info("Search service: %s", "Tavily" if settings.tavily_api_key else "DuckDuckGo (fallback)")
 
+    # Phase 3: Self-reflection engine
+    critic = Critic(llm_client)
+    refiner = Refiner(llm_client)
+    reflection_engine = ReflectionEngine(critic, refiner)
+    logger.info("Reflection engine initialized (content/strategy pillars)")
+
+    # Phase 4: Proactive intelligence
+    trigger_engine = TriggerEngine(db)
+    scheduler = WorkflowScheduler(llm_client, search_service)
+    logger.info("Trigger engine and scheduler initialized")
+
     # 4. Build bot
     bot = DigitalMateBot(
         settings=settings,
@@ -156,6 +173,9 @@ async def _run_bot() -> None:
         response_store=response_store,
         key_fact_manager=key_fact_manager,
         plan_store=plan_store,
+        reflection_engine=reflection_engine,
+        trigger_engine=trigger_engine,
+        scheduler=scheduler,
     )
 
     app = bot.build_application()
@@ -220,6 +240,47 @@ async def _run_bot() -> None:
     plan_cleanup_task = asyncio.create_task(_plan_cleanup_loop())
     logger.info("Plan cleanup task started (interval: 24h, expiry: 7 days)")
 
+    # Start background trigger check loop (every 1 hour)
+    async def _trigger_check_loop(interval_hours: int = 1) -> None:
+        """Background task that checks proactive triggers for all users."""
+        while True:
+            await asyncio.sleep(interval_hours * 3600)
+            try:
+                # Get all users with brand profiles (they're the ones we can trigger for)
+                cursor = await db.execute("SELECT DISTINCT chat_id FROM brand_profiles")
+                rows = await cursor.fetchall()
+                for row in rows:
+                    chat_id = row[0]
+                    try:
+                        has_brand = True
+                        due = await trigger_engine.check_triggers(
+                            chat_id, has_brand_profile=has_brand
+                        )
+                        for trigger in due:
+                            # Only send if bot app is available
+                            if bot.app and bot.app.bot:
+                                brand_profile = await bot.brand_manager.get(chat_id)
+                                if brand_profile and bot.scheduler:
+                                    if trigger["action"] == "search_and_suggest":
+                                        digest = await bot.scheduler.run_weekly_digest(brand_profile)
+                                        for chunk in split_message(digest):
+                                            await bot.app.bot.send_message(
+                                                chat_id=chat_id, text=chunk
+                                            )
+                                        await trigger_engine.record_trigger(
+                                            chat_id, trigger["trigger_name"], "sent digest"
+                                        )
+                    except Exception as exc:
+                        logger.warning("Trigger check failed for chat %d: %s", chat_id, exc)
+            except asyncio.CancelledError:
+                logger.info("Trigger check loop cancelled")
+                raise
+            except Exception as exc:
+                logger.error("Trigger check loop error: %s", exc)
+
+    trigger_task = asyncio.create_task(_trigger_check_loop())
+    logger.info("Trigger check task started (interval: 1h)")
+
     def _shutdown_handler(sig: signal.Signals) -> None:
         logger.info("Received signal %s, shutting down gracefully...", sig.name)
         # The polling will stop on next iteration
@@ -257,6 +318,7 @@ async def _run_bot() -> None:
     rate_limit_task.cancel()
     autocalendar_task.cancel()
     plan_cleanup_task.cancel()
+    trigger_task.cancel()
     await app.updater.stop()
     await app.stop()
     await app.shutdown()

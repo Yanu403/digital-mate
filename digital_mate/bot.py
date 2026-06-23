@@ -50,6 +50,9 @@ from digital_mate.utils.image import encode_image_file
 from digital_mate.agent.orchestrator import Orchestrator
 from digital_mate.agent.planner import Planner
 from digital_mate.agent.plan_store import PlanStore
+from digital_mate.agent.reflection import ReflectionEngine
+from digital_mate.agent.triggers import TriggerEngine
+from digital_mate.agent.scheduler import WorkflowScheduler
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -108,6 +111,9 @@ class DigitalMateBot:
         response_store: ResponseStore | None = None,
         key_fact_manager: KeyFactManager | None = None,
         plan_store: PlanStore | None = None,
+        reflection_engine: ReflectionEngine | None = None,
+        trigger_engine: TriggerEngine | None = None,
+        scheduler: WorkflowScheduler | None = None,
     ) -> None:
         """Initialize the bot with all services.
 
@@ -124,6 +130,9 @@ class DigitalMateBot:
                 When None, feedback buttons are not attached to responses.
             key_fact_manager: Optional key fact manager for long-term memory.
             plan_store: Optional plan store for multi-step plan persistence.
+            reflection_engine: Optional reflection engine for self-reflection.
+            trigger_engine: Optional trigger engine for proactive notifications.
+            scheduler: Optional workflow scheduler for autonomous workflows.
         """
         self.settings = settings
         self.llm_client = llm_client
@@ -162,6 +171,9 @@ class DigitalMateBot:
 
         # Orchestrator for multi-step workflow chaining (Phase 1) and planning (Phase 2)
         self.plan_store = plan_store
+        self.reflection_engine = reflection_engine
+        self.trigger_engine = trigger_engine
+        self.scheduler = scheduler
         self._planner: Planner | None = None
         if plan_store is not None:
             self._planner = Planner(llm_client)
@@ -206,6 +218,8 @@ class DigitalMateBot:
         self.app.add_handler(CommandHandler("cancel", self._cmd_cancel))
         self.app.add_handler(CommandHandler("plan", self._cmd_plan))
         self.app.add_handler(CommandHandler("cancelplan", self._cmd_cancelplan))
+        self.app.add_handler(CommandHandler("forget", self._cmd_forget))
+        self.app.add_handler(CommandHandler("digest", self._cmd_digest))
 
         # Brand setup conversation handler
         brand_conv = ConversationHandler(
@@ -282,6 +296,8 @@ class DigitalMateBot:
             f"/autocalendar — Auto weekly content calendar (opt-in)\n"
             f"/plan — Show active plan progress\n"
             f"/cancelplan — Cancel active plan\n"
+            f"/digest — Generate weekly content digest\n"
+            f"/forget — Clear stored key facts about you\n"
             f"/clear — Clear conversation context\n"
             f"/language en|id|bilingual — Set language\n"
             f"/cancel — Cancel current operation\n\n"
@@ -669,6 +685,52 @@ class DigitalMateBot:
             "You can start a new plan anytime by sending me your marketing goal!"
         )
 
+    async def _cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /forget command — clear user's stored key facts."""
+        if self.key_fact_manager is None:
+            await update.message.reply_text("🧠 Key facts feature is not available.")
+            return
+
+        chat_id = update.effective_chat.id
+        count = await self.key_fact_manager.clear_all_facts(chat_id)
+
+        if count > 0:
+            await update.message.reply_text(
+                f"🧹 Cleared {count} stored fact(s) about you.\n"
+                "I'll start learning fresh from our conversations!"
+            )
+        else:
+            await update.message.reply_text(
+                "ℹ️ No stored facts to clear. I haven't learned anything about you yet!"
+            )
+
+    async def _cmd_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /digest command — generate on-demand weekly content digest."""
+        if self.scheduler is None:
+            await update.message.reply_text("📅 Digest feature is not available.")
+            return
+
+        chat_id = update.effective_chat.id
+        brand_profile = await self.brand_manager.get(chat_id)
+
+        if brand_profile is None:
+            await update.message.reply_text(
+                "🏢 I need your brand profile to generate a digest.\n"
+                "Use /brand to set up your profile first!"
+            )
+            return
+
+        await update.message.reply_text("🔄 Generating your weekly content digest...")
+        await update.message.chat.send_action(ChatAction.TYPING)
+
+        try:
+            digest = await self.scheduler.run_weekly_digest(brand_profile)
+            for chunk in split_message(digest):
+                await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+        except Exception as exc:
+            logger.error("Digest generation failed for chat %d: %s", chat_id, exc)
+            await update.message.reply_text("⚠️ Could not generate digest. Please try again later.")
+
     # -----------------------------------------------------------------------
     # Brand setup conversation
     # -----------------------------------------------------------------------
@@ -1053,6 +1115,66 @@ class DigitalMateBot:
                     await last_msg.edit_text(response)
                 except Exception as exc:
                     logger.warning("edit_text failed for output-guarded response: %s", exc)
+
+            # Phase 3: Self-reflection for content/strategy pillars
+            reflection_log: dict = {"iterations": 0, "skipped": True}
+            if (
+                not result.is_general
+                and not orchestrated
+                and self.reflection_engine is not None
+                and pillar is not None
+                and response
+            ):
+                try:
+                    brand_ctx = ""
+                    if brand_profile:
+                        brand_ctx = build_brand_context(
+                            name=brand_profile.name,
+                            industry=brand_profile.industry,
+                            audience=brand_profile.audience,
+                            tone=brand_profile.tone,
+                            products=brand_profile.products,
+                            hashtags=brand_profile.hashtags,
+                            competitors=brand_profile.competitors,
+                            platform_preference=brand_profile.platform_preference,
+                            budget_range=brand_profile.budget_range,
+                            business_stage=brand_profile.business_stage,
+                        )
+                    refined, reflection_log = await self.reflection_engine.reflect_and_refine(
+                        pillar=result.pillar,
+                        user_message=user_message,
+                        initial_output=response,
+                        brand_context=brand_ctx,
+                    )
+                    if refined != response and reflection_log.get("improved"):
+                        response = refined
+                        # Update the displayed message with the refined output
+                        chunks = split_message(response)
+                        if chunks and sent_messages:
+                            try:
+                                await sent_messages[0].edit_text(chunks[0])
+                            except Exception:
+                                pass
+                            # Update overflow messages if needed
+                            for idx, extra in enumerate(chunks[1:]):
+                                msg_idx = idx + 1
+                                if msg_idx < len(sent_messages):
+                                    try:
+                                        await sent_messages[msg_idx].edit_text(extra)
+                                    except Exception:
+                                        pass
+                                else:
+                                    sent_messages.append(
+                                        await update.message.reply_text(extra)
+                                    )
+                        logger.info(
+                            "Reflection improved %s pillar for chat %d (score: %.1f -> %.1f)",
+                            result.pillar, chat_id,
+                            reflection_log.get("initial_score", 0),
+                            reflection_log.get("final_score", 0),
+                        )
+                except Exception as exc:
+                    logger.warning("Reflection engine failed for chat %d: %s", chat_id, exc)
 
             # Save to session context
             await self.session_manager.add_message(chat_id, "user", user_message)

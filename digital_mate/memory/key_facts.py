@@ -142,6 +142,28 @@ class KeyFactManager:
             logger.info("Deactivated key fact id=%d", fact_id)
         return deactivated
 
+    async def clear_all_facts(self, chat_id: int) -> int:
+        """Deactivate all key facts for a chat (soft-delete).
+
+        Used by the /forget command to let users clear their stored facts.
+
+        Args:
+            chat_id: Telegram chat ID.
+
+        Returns:
+            Number of facts deactivated.
+        """
+        cursor = await self.db.execute(
+            "UPDATE key_facts SET is_active = 0, updated_at = CURRENT_TIMESTAMP "
+            "WHERE chat_id = ? AND is_active = 1",
+            (chat_id,),
+        )
+        await self.db.commit()
+        count = cursor.rowcount
+        if count > 0:
+            logger.info("Cleared %d key facts for chat %d", count, chat_id)
+        return count
+
     async def get_facts_context(self, chat_id: int) -> str:
         """Get a formatted string of active key facts for prompt injection.
 

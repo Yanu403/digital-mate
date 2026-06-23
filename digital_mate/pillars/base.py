@@ -245,6 +245,53 @@ class BasePillar(ABC):
         )
         return PillarResult(text=text)
 
+    async def handle_with_reflection(
+        self,
+        user_message: str,
+        action: str,
+        context: list[dict[str, str]],
+        brand_profile: BrandProfile | None = None,
+        reflection_engine: Any | None = None,
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """Handle a message and optionally run self-reflection.
+
+        Calls handle() to generate the initial output, then runs the
+        reflection engine (if provided) to evaluate and refine the result.
+
+        Args:
+            user_message: The user's message text.
+            action: The classified action from the router.
+            context: Recent conversation context.
+            brand_profile: Optional brand profile for personalization.
+            reflection_engine: Optional ReflectionEngine instance.
+            **kwargs: Additional pillar-specific arguments.
+
+        Returns:
+            Tuple of (final_text, reflection_log). If no reflection engine
+            is provided, reflection_log has iterations=0.
+        """
+        initial_output = await self.handle(
+            user_message=user_message,
+            action=action,
+            context=context,
+            brand_profile=brand_profile,
+            **kwargs,
+        )
+
+        if reflection_engine is None:
+            return initial_output, {"iterations": 0, "skipped": True}
+
+        brand_context = self._build_brand_context(brand_profile)
+        final_output, log = await reflection_engine.reflect_and_refine(
+            pillar=self.PILLAR_NAME,
+            user_message=user_message,
+            initial_output=initial_output,
+            brand_context=brand_context,
+            metadata=kwargs.get("metadata"),
+        )
+        return final_output, log
+
     async def _generate_response(
         self,
         user_message: str,

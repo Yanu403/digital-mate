@@ -135,9 +135,20 @@ CREATE TABLE IF NOT EXISTS plan_steps (
 CREATE INDEX IF NOT EXISTS idx_plans_chat_id ON plans(chat_id);
 CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
 CREATE INDEX IF NOT EXISTS idx_plan_steps_plan_id ON plan_steps(plan_id);
+
+CREATE TABLE IF NOT EXISTS trigger_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    trigger_name TEXT NOT NULL,
+    last_fired_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    result_summary TEXT,
+    UNIQUE(chat_id, trigger_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trigger_log_chat_id ON trigger_log(chat_id);
 """
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class AsyncCursor:
