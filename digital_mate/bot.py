@@ -7,6 +7,7 @@ and the message handler that routes messages through the IntentRouter.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import os
 import tempfile
@@ -91,6 +92,22 @@ IMAGE_ANALYSIS_SYSTEM_PROMPT = (
     ASK_STAGE,
     CONFIRM,
 ) = range(11)
+
+
+@dataclass
+class _InputData:
+    chat_id: int
+    user_message: str
+
+
+@dataclass
+class _DispatchResult:
+    response: str
+    pillar: Any  # pillar instance or None
+    result: Any  # RouterResult
+    sent_messages: list
+    placeholder: Any  # Message
+    orchestrated: bool
 
 
 class DigitalMateBot:
@@ -1045,20 +1062,21 @@ class DigitalMateBot:
     # Message handler (main router flow)
     # -----------------------------------------------------------------------
 
-    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle incoming text messages — route through intent classifier.
+    # -- Helper: extract and validate input ---------------------------------
 
-        Shows typing indicator, classifies intent, dispatches to pillar,
-        saves context, and sends the response.
+    async def _extract_and_validate_input(self, update: Update) -> _InputData | None:
+        """Extract chat_id, sanitize input, run input_guard, and rate-limit.
+
+        Returns ``None`` when the message should be silently ignored.
         """
         if not update.message or not update.message.text:
-            return
+            return None
 
         chat_id = update.effective_chat.id
         user_message = sanitize_input(update.message.text)
 
         if not user_message:
-            return
+            return None
 
         # Security: check for prompt injection attempts
         guard = input_guard(user_message, field="message")
@@ -1075,7 +1093,331 @@ class DigitalMateBot:
                 )
             else:
                 await update.message.reply_text(guard.content)
+            return None
+
+        return _InputData(chat_id=chat_id, user_message=user_message)
+
+    # -- Helper: dispatch message -------------------------------------------
+
+    async def _dispatch_message(
+        self,
+        update: Update,
+        input_data: _InputData,
+        ctx: Any,
+        brand_profile: Any,
+        key_facts_text: str,
+        result: Any,
+    ) -> _DispatchResult:
+        """Send placeholder, try orchestrator, dispatch to pillar/general.
+
+        Returns a ``_DispatchResult`` with the final response, pillar used,
+        list of sent messages, the placeholder message, and an *orchestrated*
+        flag.
+        """
+        # Send a placeholder that we'll progressively edit as tokens stream in.
+        # For general (chitchat/help/brand) intents the response is short, so
+        # we fall back to the non-streaming _handle_general path and do a
+        # single edit. For pillar intents we stream via handle_stream().
+        placeholder = await update.message.reply_text(
+            "⏳ _Thinking..._", parse_mode=ParseMode.MARKDOWN
+        )
+
+        pillar = None
+        sent_messages: list = [placeholder]  # track messages we may attach buttons to
+
+        # --- Phase 1: Try orchestrator for multi-step workflows ---
+        orchestrated = False
+        response = ""  # Will be set by orchestrator or pillar dispatch
+        if not result.is_general and self._orchestrator:
+            try:
+                async def _workflow_progress(msg: str) -> None:
+                    try:
+                        await placeholder.edit_text(msg)
+                    except Exception:
+                        pass
+
+                response_text, was_workflow = await self._orchestrator.execute(
+                    user_message=input_data.user_message,
+                    pillar=result.pillar,
+                    action=result.action,
+                    context=ctx,
+                    brand_profile=brand_profile,
+                    key_facts=key_facts_text,
+                    on_progress=_workflow_progress,
+                    confidence=result.confidence,
+                    chat_id=input_data.chat_id,
+                )
+                if was_workflow:
+                    orchestrated = True
+                    response = response_text
+                    chunks = split_message(response)
+                    if chunks:
+                        try:
+                            await placeholder.edit_text(chunks[0])
+                        except Exception as exc:
+                            logger.warning("edit_text failed for workflow response: %s", exc)
+                        for extra in chunks[1:]:
+                            sent_messages.append(await update.message.reply_text(extra))
+            except Exception as exc:
+                logger.warning("Orchestrator failed, falling back to single pillar: %s", exc)
+
+        # --- Normal dispatch (single pillar or general) ---
+        if not orchestrated and result.is_general:
+            response = await self._handle_general(
+                input_data.user_message, result, ctx, brand_profile,
+                key_facts=key_facts_text,
+            )
+            # Edit the placeholder with the final (possibly long) response.
+            chunks = split_message(response)
+            if chunks:
+                try:
+                    await placeholder.edit_text(chunks[0])
+                except Exception as exc:
+                    logger.warning("edit_text failed for general response: %s", exc)
+                for extra in chunks[1:]:
+                    sent_messages.append(
+                        await update.message.reply_text(extra)
+                    )
+        elif not orchestrated:
+            # Dispatch to pillar — stream tokens into the placeholder.
+            pillar = self._pillars.get(result.pillar)
+            if pillar and hasattr(pillar, "handle_stream"):
+                response = await self._stream_pillar_response(
+                    update, placeholder, sent_messages, pillar,
+                    user_message=input_data.user_message,
+                    action=result.action,
+                    context=ctx,
+                    brand_profile=brand_profile,
+                    key_facts=key_facts_text,
+                )
+            elif pillar:
+                # Fallback: pillar has no handle_stream — use non-streaming handle.
+                response = await pillar.handle(
+                    user_message=input_data.user_message,
+                    action=result.action,
+                    context=ctx,
+                    brand_profile=brand_profile,
+                    key_facts=key_facts_text,
+                )
+                chunks = split_message(response)
+                if chunks:
+                    try:
+                        await placeholder.edit_text(chunks[0])
+                    except Exception as exc:
+                        logger.warning("edit_text failed for pillar response: %s", exc)
+                    for extra in chunks[1:]:
+                        sent_messages.append(
+                            await update.message.reply_text(extra)
+                        )
+            else:
+                response = "🤔 I'm not sure how to help with that. Try asking about content, strategy, research, or analytics!"
+                try:
+                    await placeholder.edit_text(response)
+                except Exception as exc:
+                    logger.warning("edit_text failed for fallback response: %s", exc)
+
+        return _DispatchResult(
+            response=response,
+            pillar=pillar,
+            result=result,
+            sent_messages=sent_messages,
+            placeholder=placeholder,
+            orchestrated=orchestrated,
+        )
+
+    # -- Helper: output guard -----------------------------------------------
+
+    async def _apply_output_guard(
+        self, response: str, sent_messages: list, placeholder: Any, chat_id: int
+    ) -> str:
+        """Check output for prompt leaks and sanitise if needed."""
+        # Security: check output for prompt leaks
+        out_guard = output_guard(response)
+        if not out_guard.is_safe:
+            logger.warning("Output guard triggered for chat %d: %s", chat_id, out_guard.threat_type)
+            response = out_guard.content
+            # Overwrite the last sent message with the sanitized content.
+            last_msg = sent_messages[-1] if sent_messages else placeholder
+            try:
+                await last_msg.edit_text(response)
+            except Exception as exc:
+                logger.warning("edit_text failed for output-guarded response: %s", exc)
+        return response
+
+    # -- Helper: self-reflection --------------------------------------------
+
+    async def _apply_reflection(
+        self,
+        response: str,
+        result: Any,
+        pillar: Any,
+        user_message: str,
+        brand_profile: Any,
+        sent_messages: list,
+        update: Update,
+        orchestrated: bool,
+        chat_id: int,
+    ) -> tuple[str, dict]:
+        """Run self-reflection for content/strategy pillars and update messages.
+
+        Returns ``(response, reflection_log)``.
+        """
+        reflection_log: dict = {"iterations": 0, "skipped": True}
+        if (
+            not result.is_general
+            and not orchestrated
+            and self.reflection_engine is not None
+            and pillar is not None
+            and response
+        ):
+            try:
+                brand_ctx = ""
+                if brand_profile:
+                    brand_ctx = build_brand_context(
+                        name=brand_profile.name,
+                        industry=brand_profile.industry,
+                        audience=brand_profile.audience,
+                        tone=brand_profile.tone,
+                        products=brand_profile.products,
+                        hashtags=brand_profile.hashtags,
+                        competitors=brand_profile.competitors,
+                        platform_preference=brand_profile.platform_preference,
+                        budget_range=brand_profile.budget_range,
+                        business_stage=brand_profile.business_stage,
+                    )
+                refined, reflection_log = await self.reflection_engine.reflect_and_refine(
+                    pillar=result.pillar,
+                    user_message=user_message,
+                    initial_output=response,
+                    brand_context=brand_ctx,
+                )
+                if refined != response and reflection_log.get("improved"):
+                    response = refined
+                    # Append reflection quality indicator
+                    initial = reflection_log.get("initial_score", 0)
+                    final = reflection_log.get("final_score", 0)
+                    if initial and final and final > initial:
+                        response += f"\n\n_✨ Auto-optimized (quality: {initial:.1f} → {final:.1f})_"
+                    # Update the displayed message with the refined output
+                    chunks = split_message(response)
+                    if chunks and sent_messages:
+                        try:
+                            await sent_messages[0].edit_text(chunks[0])
+                        except Exception:
+                            pass
+                        # Update overflow messages if needed
+                        for idx, extra in enumerate(chunks[1:]):
+                            msg_idx = idx + 1
+                            if msg_idx < len(sent_messages):
+                                try:
+                                    await sent_messages[msg_idx].edit_text(extra)
+                                except Exception:
+                                    pass
+                            else:
+                                sent_messages.append(
+                                    await update.message.reply_text(extra)
+                                )
+                    logger.info(
+                        "Reflection improved %s pillar for chat %d (score: %.1f -> %.1f)",
+                        result.pillar, chat_id,
+                        reflection_log.get("initial_score", 0),
+                        reflection_log.get("final_score", 0),
+                    )
+            except Exception as exc:
+                logger.warning("Reflection engine failed for chat %d: %s", chat_id, exc)
+        return response, reflection_log
+
+    # -- Helper: persist conversation ---------------------------------------
+
+    async def _persist_conversation(
+        self, chat_id: int, user_message: str, response: str, ctx: Any
+    ) -> None:
+        """Save the exchange to the session and trigger key-fact extraction."""
+        # Save to session context
+        await self.session_manager.add_message(chat_id, "user", user_message)
+        await self.session_manager.add_message(chat_id, "assistant", response)
+
+        # Background key fact extraction every 10 messages
+        if self.key_fact_manager and self.llm_client:
+            try:
+                msg_count = await self.session_manager.get_message_count(chat_id)
+                if msg_count > 0 and msg_count % 10 == 0:
+                    task = asyncio.create_task(
+                        self.key_fact_manager.extract_facts_from_conversation(
+                            chat_id, self.llm_client, ctx
+                        )
+                    )
+                    task.add_done_callback(
+                        lambda t: logger.warning("Key fact extraction failed: %s", t.exception()) if t.exception() else None
+                    )
+            except Exception as exc:
+                logger.warning("Key fact extraction trigger failed for chat %d: %s", chat_id, exc)
+
+    # -- Helper: attach feedback keyboard -----------------------------------
+
+    async def _attach_feedback(
+        self,
+        update: Update,
+        result: Any,
+        pillar: Any,
+        response: str,
+        sent_messages: list,
+        user_message: str,
+    ) -> None:
+        """Store response for feedback and attach inline keyboard if applicable."""
+        # Determine whether to attach feedback buttons.
+        # Only pillar responses (content/strategy/research/analytics) get
+        # feedback buttons — general chitchat/help/brand do not.
+        rstore = self.response_store
+        attach_feedback = (
+            rstore is not None
+            and not result.is_general
+            and pillar is not None
+        )
+
+        # Store the response for feedback/regenerate, if enabled
+        log_id: int | None = None
+        if attach_feedback and rstore is not None:
+            try:
+                log_id = await rstore.store(
+                    chat_id=update.effective_chat.id,
+                    pillar=result.pillar,
+                    action=result.action,
+                    user_request=user_message,
+                    response_text=response,
+                )
+            except Exception as exc:
+                logger.warning("Failed to store response for feedback: %s", exc)
+                log_id = None
+
+        # Attach the feedback keyboard to the LAST message we sent. During
+        # streaming the last message is the final edited placeholder (or the
+        # last overflow chunk); for the non-streaming path it's the last
+        # split chunk. We edit it to attach the inline keyboard.
+        if attach_feedback and log_id is not None and sent_messages:
+            last_msg = sent_messages[-1]
+            try:
+                await last_msg.edit_text(
+                    split_message(response)[-1] if len(sent_messages) > 1 else response,
+                    reply_markup=feedback_keyboard(log_id),
+                )
+            except Exception as exc:
+                logger.warning("Failed to attach feedback keyboard: %s", exc)
+
+    # -- Main handler -------------------------------------------------------
+
+    async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming text messages — route through intent classifier.
+
+        Shows typing indicator, classifies intent, dispatches to pillar,
+        saves context, and sends the response.
+        """
+        input_data = await self._extract_and_validate_input(update)
+        if input_data is None:
             return
+
+        chat_id = input_data.chat_id
+        user_message = input_data.user_message
 
         # Show typing indicator
         await update.message.chat.send_action(ChatAction.TYPING)
@@ -1104,243 +1446,25 @@ class DigitalMateBot:
                 await update.message.reply_text("⏳ Slow down a bit! Try again in a moment.")
                 return
 
-            # Send a placeholder that we'll progressively edit as tokens stream in.
-            # For general (chitchat/help/brand) intents the response is short, so
-            # we fall back to the non-streaming _handle_general path and do a
-            # single edit. For pillar intents we stream via handle_stream().
-            placeholder = await update.message.reply_text(
-                "⏳ _Thinking..._", parse_mode=ParseMode.MARKDOWN
+            dispatch = await self._dispatch_message(
+                update, input_data, ctx, brand_profile, key_facts_text, result
             )
 
-            pillar = None
-            sent_messages: list = [placeholder]  # track messages we may attach buttons to
-
-            # --- Phase 1: Try orchestrator for multi-step workflows ---
-            orchestrated = False
-            response = ""  # Will be set by orchestrator or pillar dispatch
-            if not result.is_general and self._orchestrator:
-                try:
-                    async def _workflow_progress(msg: str) -> None:
-                        try:
-                            await placeholder.edit_text(msg)
-                        except Exception:
-                            pass
-
-                    response_text, was_workflow = await self._orchestrator.execute(
-                        user_message=user_message,
-                        pillar=result.pillar,
-                        action=result.action,
-                        context=ctx,
-                        brand_profile=brand_profile,
-                        key_facts=key_facts_text,
-                        on_progress=_workflow_progress,
-                        confidence=result.confidence,
-                        chat_id=chat_id,
-                    )
-                    if was_workflow:
-                        orchestrated = True
-                        response = response_text
-                        chunks = split_message(response)
-                        if chunks:
-                            try:
-                                await placeholder.edit_text(chunks[0])
-                            except Exception as exc:
-                                logger.warning("edit_text failed for workflow response: %s", exc)
-                            for extra in chunks[1:]:
-                                sent_messages.append(await update.message.reply_text(extra))
-                except Exception as exc:
-                    logger.warning("Orchestrator failed, falling back to single pillar: %s", exc)
-
-            # --- Normal dispatch (single pillar or general) ---
-            if not orchestrated and result.is_general:
-                response = await self._handle_general(
-                    user_message, result, ctx, brand_profile,
-                    key_facts=key_facts_text,
-                )
-                # Edit the placeholder with the final (possibly long) response.
-                chunks = split_message(response)
-                if chunks:
-                    try:
-                        await placeholder.edit_text(chunks[0])
-                    except Exception as exc:
-                        logger.warning("edit_text failed for general response: %s", exc)
-                    for extra in chunks[1:]:
-                        sent_messages.append(
-                            await update.message.reply_text(extra)
-                        )
-            elif not orchestrated:
-                # Dispatch to pillar — stream tokens into the placeholder.
-                pillar = self._pillars.get(result.pillar)
-                if pillar and hasattr(pillar, "handle_stream"):
-                    response = await self._stream_pillar_response(
-                        update, placeholder, sent_messages, pillar,
-                        user_message=user_message,
-                        action=result.action,
-                        context=ctx,
-                        brand_profile=brand_profile,
-                        key_facts=key_facts_text,
-                    )
-                elif pillar:
-                    # Fallback: pillar has no handle_stream — use non-streaming handle.
-                    response = await pillar.handle(
-                        user_message=user_message,
-                        action=result.action,
-                        context=ctx,
-                        brand_profile=brand_profile,
-                        key_facts=key_facts_text,
-                    )
-                    chunks = split_message(response)
-                    if chunks:
-                        try:
-                            await placeholder.edit_text(chunks[0])
-                        except Exception as exc:
-                            logger.warning("edit_text failed for pillar response: %s", exc)
-                        for extra in chunks[1:]:
-                            sent_messages.append(
-                                await update.message.reply_text(extra)
-                            )
-                else:
-                    response = "🤔 I'm not sure how to help with that. Try asking about content, strategy, research, or analytics!"
-                    try:
-                        await placeholder.edit_text(response)
-                    except Exception as exc:
-                        logger.warning("edit_text failed for fallback response: %s", exc)
-
-            # Security: check output for prompt leaks
-            out_guard = output_guard(response)
-            if not out_guard.is_safe:
-                logger.warning("Output guard triggered for chat %d: %s", chat_id, out_guard.threat_type)
-                response = out_guard.content
-                # Overwrite the last sent message with the sanitized content.
-                last_msg = sent_messages[-1] if sent_messages else placeholder
-                try:
-                    await last_msg.edit_text(response)
-                except Exception as exc:
-                    logger.warning("edit_text failed for output-guarded response: %s", exc)
-
-            # Phase 3: Self-reflection for content/strategy pillars
-            reflection_log: dict = {"iterations": 0, "skipped": True}
-            if (
-                not result.is_general
-                and not orchestrated
-                and self.reflection_engine is not None
-                and pillar is not None
-                and response
-            ):
-                try:
-                    brand_ctx = ""
-                    if brand_profile:
-                        brand_ctx = build_brand_context(
-                            name=brand_profile.name,
-                            industry=brand_profile.industry,
-                            audience=brand_profile.audience,
-                            tone=brand_profile.tone,
-                            products=brand_profile.products,
-                            hashtags=brand_profile.hashtags,
-                            competitors=brand_profile.competitors,
-                            platform_preference=brand_profile.platform_preference,
-                            budget_range=brand_profile.budget_range,
-                            business_stage=brand_profile.business_stage,
-                        )
-                    refined, reflection_log = await self.reflection_engine.reflect_and_refine(
-                        pillar=result.pillar,
-                        user_message=user_message,
-                        initial_output=response,
-                        brand_context=brand_ctx,
-                    )
-                    if refined != response and reflection_log.get("improved"):
-                        response = refined
-                        # Append reflection quality indicator
-                        initial = reflection_log.get("initial_score", 0)
-                        final = reflection_log.get("final_score", 0)
-                        if initial and final and final > initial:
-                            response += f"\n\n_✨ Auto-optimized (quality: {initial:.1f} → {final:.1f})_"
-                        # Update the displayed message with the refined output
-                        chunks = split_message(response)
-                        if chunks and sent_messages:
-                            try:
-                                await sent_messages[0].edit_text(chunks[0])
-                            except Exception:
-                                pass
-                            # Update overflow messages if needed
-                            for idx, extra in enumerate(chunks[1:]):
-                                msg_idx = idx + 1
-                                if msg_idx < len(sent_messages):
-                                    try:
-                                        await sent_messages[msg_idx].edit_text(extra)
-                                    except Exception:
-                                        pass
-                                else:
-                                    sent_messages.append(
-                                        await update.message.reply_text(extra)
-                                    )
-                        logger.info(
-                            "Reflection improved %s pillar for chat %d (score: %.1f -> %.1f)",
-                            result.pillar, chat_id,
-                            reflection_log.get("initial_score", 0),
-                            reflection_log.get("final_score", 0),
-                        )
-                except Exception as exc:
-                    logger.warning("Reflection engine failed for chat %d: %s", chat_id, exc)
-
-            # Save to session context
-            await self.session_manager.add_message(chat_id, "user", user_message)
-            await self.session_manager.add_message(chat_id, "assistant", response)
-
-            # Background key fact extraction every 10 messages
-            if self.key_fact_manager and self.llm_client:
-                try:
-                    msg_count = await self.session_manager.get_message_count(chat_id)
-                    if msg_count > 0 and msg_count % 10 == 0:
-                        task = asyncio.create_task(
-                            self.key_fact_manager.extract_facts_from_conversation(
-                                chat_id, self.llm_client, ctx
-                            )
-                        )
-                        task.add_done_callback(
-                            lambda t: logger.warning("Key fact extraction failed: %s", t.exception()) if t.exception() else None
-                        )
-                except Exception as exc:
-                    logger.warning("Key fact extraction trigger failed for chat %d: %s", chat_id, exc)
-
-            # Determine whether to attach feedback buttons.
-            # Only pillar responses (content/strategy/research/analytics) get
-            # feedback buttons — general chitchat/help/brand do not.
-            rstore = self.response_store
-            attach_feedback = (
-                rstore is not None
-                and not result.is_general
-                and pillar is not None
+            dispatch.response = await self._apply_output_guard(
+                dispatch.response, dispatch.sent_messages, dispatch.placeholder, chat_id
             )
 
-            # Store the response for feedback/regenerate, if enabled
-            log_id: int | None = None
-            if attach_feedback and rstore is not None:
-                try:
-                    log_id = await rstore.store(
-                        chat_id=chat_id,
-                        pillar=result.pillar,
-                        action=result.action,
-                        user_request=user_message,
-                        response_text=response,
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to store response for feedback: %s", exc)
-                    log_id = None
+            dispatch.response, reflection_log = await self._apply_reflection(
+                dispatch.response, result, dispatch.pillar, user_message,
+                brand_profile, dispatch.sent_messages, update,
+                dispatch.orchestrated, chat_id,
+            )
 
-            # Attach the feedback keyboard to the LAST message we sent. During
-            # streaming the last message is the final edited placeholder (or the
-            # last overflow chunk); for the non-streaming path it's the last
-            # split chunk. We edit it to attach the inline keyboard.
-            if attach_feedback and log_id is not None and sent_messages:
-                last_msg = sent_messages[-1]
-                try:
-                    await last_msg.edit_text(
-                        split_message(response)[-1] if len(sent_messages) > 1 else response,
-                        reply_markup=feedback_keyboard(log_id),
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to attach feedback keyboard: %s", exc)
+            await self._persist_conversation(chat_id, user_message, dispatch.response, ctx)
+
+            await self._attach_feedback(
+                update, result, dispatch.pillar, dispatch.response, dispatch.sent_messages, user_message
+            )
 
         except Exception as exc:
             logger.error("Error handling message from chat %d: %s", chat_id, exc, exc_info=True)
