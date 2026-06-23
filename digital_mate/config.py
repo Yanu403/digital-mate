@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(..., min_length=1)
     llm_model: str = "gpt-4o"
     llm_router_model: str = ""
+    llm_vision_model: str = ""  # Empty = use llm_model. Some providers need a different model for vision.
     llm_timeout: float = Field(default=120.0, gt=0, description="LLM API read timeout in seconds")
     llm_max_retries: int = Field(default=3, ge=1, le=10, description="Max retry attempts for LLM calls")
     llm_stale_timeout: float = Field(default=30.0, gt=0, description="Seconds without data before killing a stream")
@@ -85,6 +86,15 @@ class Settings(BaseSettings):
             Router model string.
         """
         return self.llm_router_model or self.llm_model
+
+    @property
+    def vision_model_effective(self) -> str:
+        """Return the effective vision model (falls back to llm_model if empty).
+
+        Returns:
+            Vision model string.
+        """
+        return self.llm_vision_model or self.llm_model
 
     @property
     def notion_enabled(self) -> bool:

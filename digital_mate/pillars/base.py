@@ -143,6 +143,60 @@ class BasePillar(ABC):
             business_stage=profile.business_stage,
         )
 
+    async def handle_image(
+        self,
+        user_message: str,
+        image_base64: str,
+        image_mime_type: str = "image/jpeg",
+        action: str = "analyze",
+        context: list[dict[str, str]] | None = None,
+        brand_profile: BrandProfile | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Handle an image message for this pillar.
+
+        Default implementation builds pillar messages and calls
+        :meth:`LLMClient.chat_with_image`. Subclasses (e.g. Analytics,
+        Research) may override with specialised analysis prompts.
+
+        Args:
+            user_message: The user's caption / instruction text.
+            image_base64: Base64-encoded image data (without data: prefix).
+            image_mime_type: MIME type of the image.
+            action: The classified action (default "analyze").
+            context: Recent conversation context (may be None).
+            brand_profile: Optional brand profile for personalization.
+            **kwargs: Additional pillar-specific arguments.
+
+        Returns:
+            Formatted response text from the LLM.
+        """
+        brand_context = self._build_brand_context(brand_profile)
+        key_facts = kwargs.get("key_facts", "")
+        messages = build_pillar_messages(
+            user_message=user_message,
+            pillar=self.PILLAR_NAME,
+            context=context or [],
+            language=self.language,
+            bot_name=self.bot_name,
+            brand_context=brand_context,
+            key_facts=key_facts,
+        )
+        try:
+            return await self.llm_client.chat_with_image(
+                messages,
+                image_base64=image_base64,
+                image_mime_type=image_mime_type,
+                max_tokens=self.MAX_RESPONSE_TOKENS,
+            )
+        except LLMError as exc:
+            logger.error("LLM vision error in %s pillar: %s", self.PILLAR_NAME, exc)
+            return (
+                "⚠️ Sorry, I encountered an error analyzing the image. "
+                "Please try again in a moment.\n\n"
+                f"(Error: {exc})"
+            )
+
     async def _generate_response(
         self,
         user_message: str,

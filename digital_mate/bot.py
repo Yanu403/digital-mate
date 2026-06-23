@@ -46,9 +46,28 @@ from digital_mate.memory.response_store import ResponseStore
 from digital_mate.pillars.autocalendar import CalendarGenerator
 from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
 from digital_mate.utils.keyboards import feedback_keyboard
+from digital_mate.utils.image import encode_image_file
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
+
+# System prompt for image/vision analysis — used when a user sends a photo
+# without a specific pillar routing keyword in the caption.
+IMAGE_ANALYSIS_SYSTEM_PROMPT = (
+    "You are Digital Mate, an AI digital marketing assistant. "
+    "The user has shared an image. Analyze it from a marketing perspective:\n\n"
+    "1. If it's an analytics dashboard/screenshot: identify key metrics, trends, "
+    "and suggest improvements\n"
+    "2. If it's a competitor's ad/creative: analyze the copy, visual strategy, "
+    "target audience, and positioning\n"
+    "3. If it's a design draft: evaluate visual hierarchy, brand consistency, "
+    "and marketing effectiveness\n"
+    "4. If it's a social media post: assess engagement potential, hook strength, "
+    "and content quality\n"
+    "5. Otherwise: describe what you see and relate it to marketing if possible\n\n"
+    "Respond in the user's language (match their caption language or default to bilingual).\n"
+    "Be specific and actionable. Don't just describe — provide marketing insights and recommendations."
+)
 
 # Brand setup conversation states
 (
@@ -196,6 +215,12 @@ class DigitalMateBot:
         # Message handler for all text messages (routes through intent router)
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_message),
+            group=2,
+        )
+
+        # Photo handler — images are analyzed via the vision LLM
+        self.app.add_handler(
+            MessageHandler(filters.PHOTO, self._handle_photo),
             group=2,
         )
 
@@ -1142,6 +1167,275 @@ class DigitalMateBot:
                 "• Analytics and performance reports\n\n"
                 "Try rephrasing your question or ask me something specific!"
             )
+
+    # -----------------------------------------------------------------------
+    # Photo / image handler (vision capability)
+    # -----------------------------------------------------------------------
+
+    async def _handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming photo messages — download, encode, and analyze via vision LLM.
+
+        Downloads the largest available photo size from Telegram, encodes it
+        as base64 (resizing to max 1024×1024 via PIL), then sends it to the
+        vision-capable LLM with the image analysis system prompt.  If the
+        user provides a caption, it is used as the user instruction; if the
+        caption contains a pillar keyword (e.g. "analytics"), the image is
+        routed to that pillar's ``handle_image()`` instead.
+
+        The response is streamed into a placeholder message using the same
+        progressive-edit pattern as text messages, and feedback buttons are
+        attached if a response store is configured.
+        """
+        if not update.message or not update.message.photo:
+            return
+
+        chat_id = update.effective_chat.id
+        caption = update.message.caption or ""
+        user_message = sanitize_input(caption) if caption else ""
+
+        # Show typing indicator
+        await update.message.chat.send_action(ChatAction.TYPING)
+
+        import os
+        import tempfile
+
+        tmp_path: str | None = None
+        try:
+            # Pick the largest photo size (last in the list)
+            photo = update.message.photo[-1]
+
+            # Download the file
+            file = await context.bot.get_file(photo.file_id)
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".jpg", prefix="dm_photo_")
+            os.close(tmp_fd)
+            await file.download_to_drive(tmp_path)
+
+            # Encode image (resize + base64)
+            image_base64, image_mime = encode_image_file(tmp_path)
+
+            # Send placeholder that we'll progressively edit
+            placeholder = await update.message.reply_text(
+                "⏳ _Analyzing image..._", parse_mode=ParseMode.MARKDOWN
+            )
+            sent_messages: list = [placeholder]
+
+            # Determine routing: if caption mentions a pillar keyword,
+            # delegate to that pillar's handle_image(); otherwise use the
+            # general image analysis prompt directly.
+            pillar = self._match_pillar_from_caption(user_message)
+
+            # Build conversation context and brand profile
+            ctx = await self.session_manager.get_context(chat_id)
+            brand_profile = await self.brand_manager.get(chat_id)
+
+            # Determine the vision model to use
+            vision_model = getattr(self.settings, "vision_model_effective", None)
+
+            if pillar is not None:
+                # Route to pillar's handle_image()
+                response = await pillar.handle_image(
+                    user_message=user_message or "Analyze this image from a marketing perspective.",
+                    image_base64=image_base64,
+                    image_mime_type=image_mime,
+                    action="analyze",
+                    context=ctx,
+                    brand_profile=brand_profile,
+                )
+                # Edit placeholder with the response (may need splitting)
+                chunks = split_message(response)
+                if chunks:
+                    try:
+                        await placeholder.edit_text(chunks[0])
+                    except Exception as exc:
+                        logger.warning("edit_text failed for image response: %s", exc)
+                    for extra in chunks[1:]:
+                        sent_messages.append(
+                            await update.message.reply_text(extra)
+                        )
+            else:
+                # General image analysis — stream via chat_with_image_stream
+                analysis_prompt = user_message or "Analyze this image from a marketing perspective."
+                messages: list[dict[str, str]] = [
+                    {"role": "system", "content": IMAGE_ANALYSIS_SYSTEM_PROMPT},
+                ]
+                # Include conversation context
+                for msg in ctx[-8:]:
+                    messages.append(msg)
+                messages.append({"role": "user", "content": analysis_prompt})
+
+                response = await self._stream_image_response(
+                    update, placeholder, sent_messages,
+                    messages=messages,
+                    image_base64=image_base64,
+                    image_mime=image_mime,
+                    vision_model=vision_model,
+                )
+
+            # Security: check output for prompt leaks
+            out_guard = output_guard(response)
+            if not out_guard.is_safe:
+                logger.warning("Output guard triggered for chat %d: %s", chat_id, out_guard.threat_type)
+                response = out_guard.content
+                last_msg = sent_messages[-1] if sent_messages else placeholder
+                try:
+                    await last_msg.edit_text(response)
+                except Exception as exc:
+                    logger.warning("edit_text failed for output-guarded image response: %s", exc)
+
+            # Save to session context
+            display_caption = user_message or "[Image shared for analysis]"
+            await self.session_manager.add_message(chat_id, "user", display_caption)
+            await self.session_manager.add_message(chat_id, "assistant", response)
+
+            # Attach feedback buttons if response store is configured
+            rstore = self.response_store
+            if rstore is not None and sent_messages:
+                try:
+                    log_id = await rstore.store(
+                        chat_id=chat_id,
+                        pillar="image" if pillar is None else pillar.PILLAR_NAME,
+                        action="analyze",
+                        user_request=display_caption,
+                        response_text=response,
+                    )
+                    if log_id is not None:
+                        last_msg = sent_messages[-1]
+                        await last_msg.edit_text(
+                            split_message(response)[-1] if len(sent_messages) > 1 else response,
+                            reply_markup=feedback_keyboard(log_id),
+                        )
+                except Exception as exc:
+                    logger.warning("Failed to store/attach image feedback: %s", exc)
+
+        except Exception as exc:
+            logger.error("Error handling photo from chat %d: %s", chat_id, exc, exc_info=True)
+            await update.message.reply_text(
+                "⚠️ Sorry, I couldn't analyze that image. Please try again or send a different photo!"
+            )
+        finally:
+            # Clean up temp file
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    logger.debug("Failed to clean up temp file: %s", tmp_path)
+
+    def _match_pillar_from_caption(self, caption: str) -> Any:
+        """Check if a photo caption contains a pillar keyword for routing.
+
+        Returns the matching pillar instance or None for general analysis.
+
+        Args:
+            caption: The user's photo caption (may be empty).
+
+        Returns:
+            A BasePillar instance if a keyword matches, else None.
+        """
+        if not caption:
+            return None
+        lower = caption.lower()
+        # Keyword → pillar mapping
+        keyword_map = {
+            "analytics": self.analytics_pillar,
+            "metrics": self.analytics_pillar,
+            "dashboard": self.analytics_pillar,
+            "report": self.analytics_pillar,
+            "kpi": self.analytics_pillar,
+            "research": self.research_pillar,
+            "competitor": self.research_pillar,
+            "compet": self.research_pillar,
+            "content": self.content_pillar,
+            "copy": self.content_pillar,
+            "caption": self.content_pillar,
+            "strategy": self.strategy_pillar,
+            "plan": self.strategy_pillar,
+        }
+        for keyword, pillar in keyword_map.items():
+            if keyword in lower:
+                return pillar
+        return None
+
+    async def _stream_image_response(
+        self,
+        update: Update,
+        placeholder: Any,
+        sent_messages: list,
+        *,
+        messages: list[dict[str, str]],
+        image_base64: str,
+        image_mime: str,
+        vision_model: str | None,
+    ) -> str:
+        """Stream a vision LLM response into the placeholder message.
+
+        Uses :meth:`LLMClient.chat_with_image_stream` for real-time token
+        delivery with the same progressive-edit pattern as
+        :meth:`_stream_pillar_response`.
+
+        Args:
+            update: The Telegram Update.
+            placeholder: The initial "⏳ Analyzing image..." message.
+            sent_messages: List tracking all messages sent (appended in place).
+            messages: The message list for the LLM call.
+            image_base64: Base64-encoded image data.
+            image_mime: MIME type of the image.
+            vision_model: Model name for vision, or None to use default.
+
+        Returns:
+            The full accumulated response text.
+        """
+        buffer = ""
+        last_edit = time.monotonic()
+        current_msg = placeholder
+        TELEGRAM_LIMIT = 4000
+        EDIT_INTERVAL = 1.0
+        EDIT_CHAR_INTERVAL = 200
+
+        try:
+            async for chunk in self.llm_client.chat_with_image_stream(
+                messages,
+                image_base64=image_base64,
+                image_mime_type=image_mime,
+                max_tokens=2048,
+                model=vision_model,
+            ):
+                buffer += chunk
+                now = time.monotonic()
+                # Flush if we're about to exceed Telegram's message limit.
+                if len(buffer) >= TELEGRAM_LIMIT:
+                    try:
+                        await current_msg.edit_text(buffer[:TELEGRAM_LIMIT])
+                    except Exception as exc:
+                        logger.warning("edit_text overflow flush failed: %s", exc)
+                    overflow = buffer[TELEGRAM_LIMIT:]
+                    current_msg = await update.message.reply_text(overflow)
+                    sent_messages.append(current_msg)
+                    buffer = overflow
+                    last_edit = now
+                    continue
+                # Throttle edits: at most ~1/sec or every ~200 chars.
+                if (now - last_edit >= EDIT_INTERVAL) or (len(buffer) % EDIT_CHAR_INTERVAL < len(chunk)):
+                    try:
+                        await current_msg.edit_text(buffer)
+                    except Exception as exc:
+                        logger.debug("progressive edit_text skipped: %s", exc)
+                    last_edit = now
+        except Exception as exc:
+            logger.error("Vision stream error: %s", exc)
+            if not buffer:
+                buffer = (
+                    "⚠️ Sorry, I encountered an error analyzing the image. "
+                    "Please try again in a moment."
+                )
+
+        # Final edit with the complete buffer.
+        if buffer:
+            try:
+                await current_msg.edit_text(buffer)
+            except Exception as exc:
+                logger.debug("final edit_text skipped: %s", exc)
+
+        return buffer
 
     # -----------------------------------------------------------------------
     # Feedback button callback handler
