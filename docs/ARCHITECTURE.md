@@ -1,11 +1,12 @@
 # Architecture
 
-Digital Mate is a Telegram bot that acts as an AI-powered digital marketing assistant. It classifies user intent into one of four marketing pillars, dispatches to a specialized handler, and returns structured, actionable responses.
+Digital Mate is a Telegram bot that acts as an AI-powered digital marketing assistant. It classifies user intent into one of four marketing pillars, dispatches to a specialized handler through an orchestrator layer, and returns structured, actionable responses. The bot supports multi-step workflows, goal decomposition with planning, self-reflection for output quality, proactive triggers, and cross-session long-term memory.
 
 ## Design Principles
 
 - **Pillar-based routing** — A lightweight LLM call classifies messages before the "real" work happens. This keeps responses focused and lets each pillar have its own prompt, output format, and token budget.
-- **Graceful degradation** — Every external integration (Notion, Tavily, web search) is optional. The bot works with just an LLM API key; everything else enhances the experience.
+- **Orchestrator dispatch** — The router classifies intent; the orchestrator decides *how* to execute it: single pillar call, multi-step workflow, or decomposed plan.
+- **Graceful degradation** — Every external integration (Notion, Tavily, web search, vision) is optional. The bot works with just an LLM API key; everything else enhances the experience.
 - **Security-first** — Input/output guards block prompt injection, role hijacking, and data exfiltration attempts before they reach the LLM.
 - **Standalone** — No platform-specific dependencies. Runs anywhere Python 3.11+ is available.
 
@@ -27,7 +28,14 @@ Digital Mate is a Telegram bot that acts as an AI-powered digital marketing assi
                  │    router.py      │  LLM-based intent classifier
                  │                   │  • TTL cache (avoid repeat calls)
                  │                   │  • Per-user cooldown
-                 │                   │  • Keyword fallback on LLM error
+                 │                   │  • LLM routing classifier
+                 └─────────┬─────────┘
+                           │
+                 ┌─────────▼─────────┐
+                 │  orchestrator.py  │  Central dispatch
+                 │                   │  • Route: workflow | plan | single
+                 │                   │  • Delegates to WorkflowEngine,
+                 │                   │    Planner+Executor, or direct pillar
                  └─────────┬─────────┘
                            │
         ┌──────────┬───────┼───────┬──────────┐
@@ -43,6 +51,12 @@ Digital Mate is a Telegram bot that acts as an AI-powered digital marketing assi
               │   LLM Client    │  OpenAI-compatible API
               │                 │  • Retry + exponential backoff
               │                 │  • Per-pillar max_tokens
+              └────────┬────────┘
+                       │
+              ┌────────▼────────┐
+              │  Reflection     │  (Content + Strategy pillars)
+              │  Critic+Refiner │  • Quality scoring (1-10)
+              │                 │  • Auto-iteration (max 2 rounds)
               └─────────────────┘
 ```
 
@@ -50,7 +64,7 @@ Digital Mate is a Telegram bot that acts as an AI-powered digital marketing assi
 
 ### Intent Router (`router.py`)
 
-Classifies every user message into a **pillar** and **action** using a cheap/fast LLM call with JSON output.
+Classifies every user message into a **pillar** and **action** using an LLM-based routing classifier with JSON output.
 
 | Pillar | Actions |
 |--------|---------|
@@ -64,7 +78,110 @@ The router has two cost-saving mechanisms:
 - **TTL cache** — identical messages within 5 minutes return cached results
 - **Per-user cooldown** — minimum 2 seconds between LLM calls per chat
 
-If the LLM router fails, a keyword-based fallback attempts basic classification.
+The LLM routing classifier replaces the earlier keyword-matching fallback for primary classification.
+
+### Agent Orchestrator (`agent/orchestrator.py`)
+
+Central dispatch layer that receives the classified intent and decides the execution path:
+
+| Condition | Execution Path |
+|-----------|---------------|
+| Multi-step detected (e.g., "based on trends") | Workflow Engine — chains pillars with data passing |
+| Complex goal (e.g., "launch a product") | Planner → Executor — decomposes into 2–7 steps |
+| Single request | Direct pillar call |
+
+The orchestrator also handles:
+- Reflection integration — automatically runs critic+refiner on Content/Strategy output
+- Proactive trigger checks — evaluates if any scheduled triggers should fire
+- Plan auto-resume — restarts any incomplete plans from the previous session
+
+### Workflow Engine (`agent/workflow.py`)
+
+Executes ordered sequences of pillar calls with data passing between steps.
+
+**Built-in workflows:**
+
+1. **Research → Content** — Search trends → generate caption referencing found trends
+2. **Research → Strategy** — Competitor analysis → marketing plan addressing gaps
+3. **Analytics → Strategy** — Interpret metrics → improvement recommendations
+4. **Strategy → Content** — Marketing plan → content calendar from the plan
+
+Each workflow step specifies: pillar, action, input mapping (from previous step's output). Progress is streamed to the user: "🔍 Searching trends... → ✍️ Writing caption..."
+
+### Planner + Executor (`agent/planner.py`, `agent/executor.py`)
+
+Breaks complex user goals into concrete, executable plans.
+
+**Planner** — LLM-powered, takes a user goal and outputs an ordered list of 2–7 steps. Each step specifies:
+- `pillar` — which marketing pillar to use
+- `action` — specific action within that pillar
+- `input_from` — which previous step's output to use (or `"user_request"`)
+- `description` — what this step accomplishes
+
+**Executor** — Runs plan steps sequentially, passing data between them. Handles:
+- Step failure recovery — retries or skips with user notification
+- Progress updates — streamed to Telegram as each step completes
+- Plan cancellation — via `/cancelplan` command
+
+### Plan Persistence (`agent/plan_store.py`)
+
+Stores active plans in SQLite so they survive bot restarts. On startup, the orchestrator checks for any incomplete plans and resumes execution automatically.
+
+### Self-Reflection (`agent/critic.py`, `agent/refiner.py`, `agent/reflection.py`)
+
+Quality gate for Content and Strategy pillar output.
+
+**Critic** — Evaluates output on defined criteria:
+- Hook strength (1-10)
+- Brand voice match (1-10)
+- CTA clarity (1-10)
+- Overall quality (1-10)
+
+If any score < 7, the critic provides specific improvement suggestions.
+
+**Refiner** — Takes critique feedback and regenerates improved output.
+
+**Reflection Engine** — Orchestrates the critic+refiner loop (max 2 iterations). When output is improved, the user sees a `✨ Auto-optimized` indicator.
+
+| Pillar | Reflection | Reason |
+|--------|-----------|--------|
+| Content | Always | Quality-sensitive, hook/CTA matters |
+| Strategy | Always | High stakes, long output |
+| Research | Conditional | Only if sources < 3 |
+| Analytics | Skip | Factual, less subjective |
+| General | Skip | Low stakes |
+
+### Proactive Triggers (`agent/triggers.py`, `agent/scheduler.py`)
+
+**Triggers** — Define conditions that should prompt the bot to reach out:
+
+| Trigger | Action |
+|---------|--------|
+| Weekly trend check | Auto-search trends in user's industry |
+| Content calendar reminder | Nudge when user hasn't posted recently |
+| Campaign performance alert | Flag when campaign is ready for review |
+| Competitor monitoring | Alert on competitor activity |
+
+**Scheduler** — Cron-like runner that evaluates triggers on a schedule and executes the appropriate workflow when a trigger condition is met. The `/digest` command triggers an on-demand trend digest.
+
+### Long-Term Memory (`memory/key_facts.py`)
+
+Cross-session key fact storage that persists important user context:
+
+- **Extraction** — Every 10 messages, an LLM call extracts 0–3 key facts from the conversation
+- **Storage** — Facts stored in SQLite with `chat_id` association
+- **Injection** — Stored facts injected into system prompts on future sessions
+- **Clearing** — `/forget` command lets the user clear all stored facts
+
+Example facts: "user focuses on IG Reels", "budget is small", "F&B industry in Jakarta"
+
+### Feedback System (`memory/response_store.py`, `utils/keyboards.py`)
+
+Inline feedback buttons (👍/👎/🔄) attached to every bot response:
+
+- **👍/👎** — Stored in `response_store` for future analysis and training
+- **🔄** — Regenerates the response (triggers a new LLM call with the same context)
+- Feedback data is stored per-response with metadata for future fine-tuning
 
 ### Pillar Handlers (`pillars/`)
 
@@ -101,9 +218,12 @@ Repeated offenders are tracked per-chat. After 3+ injection attempts, messages a
 
 | Component | Purpose |
 |-----------|---------|
-| `database.py` | SQLite schema, async connection via `aiosqlite` |
+| `database.py` | SQLite schema (v7), async connection via `aiosqlite` |
 | `session.py` | Per-chat conversation context (sliding window of last N turns) |
 | `brand_profile.py` | Persistent brand profile per chat (UPSERT) |
+| `key_facts.py` | Long-term cross-session key facts |
+| `response_store.py` | Feedback storage (👍/👎/🔄) |
+| `autocalendar.py` | Auto content calendar generator |
 
 Sessions are automatically cleaned up every 24 hours (messages older than 7 days are purged).
 
@@ -115,18 +235,55 @@ Sessions are automatically cleaned up every 24 hours (messages older than 7 days
 | **Notion** | No | Content calendar + campaign tracker read/write |
 | **Tavily** | No | Primary web search provider |
 | **DuckDuckGo** | No (fallback) | Free web search when Tavily is not configured |
+| **Vision** | No | Image analysis for screenshots, ads, dashboards |
 
 All integrations fail gracefully — a missing API key means that feature is simply disabled, not that the bot crashes.
 
-## Data Flow Example
+## Data Flow Examples
+
+### Single-Turn Request
 
 User sends: *"Buatkan caption Instagram untuk skincare launch"*
 
 1. **bot.py** — sanitizes input, runs `input_guard()` (safe), shows typing indicator
 2. **router.py** — LLM classifies → `{pillar: "content", action: "caption", confidence: 0.95}`
-3. **content.py** — builds prompt with brand context + user message, calls LLM with `max_tokens=2048`
-4. **LLM** — generates caption with hashtags and CTA
-5. **bot.py** — runs `output_guard()` (safe), saves to session, splits if >4096 chars, sends reply
+3. **orchestrator.py** — single request, no multi-step detected → direct pillar call
+4. **content.py** — builds prompt with brand context + user message, calls LLM with `max_tokens=2048`
+5. **reflection.py** — critic evaluates output, score 8/10 → passes, no refinement needed
+6. **bot.py** — runs `output_guard()` (safe), saves to session, splits if >4096 chars, sends reply
+
+### Multi-Step Workflow
+
+User sends: *"Buat caption berdasarkan tren skincare terbaru"*
+
+1. **bot.py** — sanitizes input, runs `input_guard()` (safe)
+2. **router.py** — LLM classifies → `{pillar: "content", action: "caption", confidence: 0.92}`
+3. **orchestrator.py** — detects "berdasarkan tren" → triggers **Research → Content** workflow
+4. **workflow.py** — Step 1: Research pillar searches web for skincare trends
+5. **workflow.py** — Step 2: Content pillar generates caption using research results as context
+6. **reflection.py** — critic evaluates output, score 7/10 → passes
+7. **bot.py** — runs `output_guard()`, sends reply with progress indicators
+
+### Goal Decomposition (Plan)
+
+User sends: *"Bantu launching produk skincare baru"*
+
+1. **bot.py** — sanitizes input, runs `input_guard()` (safe)
+2. **router.py** — LLM classifies → `{pillar: "strategy", action: "plan", confidence: 0.88}`
+3. **orchestrator.py** — detects complex goal → invokes Planner
+4. **planner.py** — LLM decomposes into 6 steps:
+   ```
+   Step 1: Research tren skincare terbaru        → research:trends
+   Step 2: Analisis 3 kompetitor utama           → research:competitors
+   Step 3: Buat positioning & strategy           → strategy:plan
+   Step 4: Generate content calendar (2 minggu)  → content:calendar
+   Step 5: Draft 5 caption IG/TikTok             → content:caption
+   Step 6: Buat metrics tracker                  → analytics:report
+   ```
+5. **plan_store.py** — persists plan to SQLite
+6. **executor.py** — executes each step, streaming progress to user
+7. **reflection.py** — runs on steps 3, 4, 5 (Content/Strategy outputs)
+8. **bot.py** — delivers final summary with all outputs
 
 ## Tech Stack
 
@@ -142,13 +299,19 @@ User sends: *"Buatkan caption Instagram untuk skincare launch"*
 
 ## Testing Strategy
 
-- **240 tests** covering all modules
+- **510 tests** covering all modules
 - All external APIs (LLM, Notion, Search) are mocked — no real calls in tests
 - Security tests verify injection detection and blocking
 - Router tests cover cache, cooldown, fallback, and throttle feedback
 - LLM client tests verify jittered backoff, streaming, stale detection, and error handling
 - Session tests verify atomic transactions and cleanup
 - Feedback tests cover 👍/👎/🔄 buttons, response store, and regenerate flow
+- Orchestrator tests cover workflow execution, plan decomposition, and reflection integration
+- Planner tests cover goal decomposition, step sequencing, and error recovery
+- Critic/refiner tests cover quality scoring, refinement loop, and iteration limits
+- Trigger tests cover condition detection, scheduler execution, and `/digest` command
+- Key facts tests cover extraction, injection, and `/forget` command
+- Routing classifier tests cover LLM-based intent classification
 
 ## Project Structure
 
@@ -158,10 +321,21 @@ digital_mate/
 ├── __main__.py              # Entry point, CLI args, graceful shutdown
 ├── config.py                # Pydantic Settings from .env
 ├── bot.py                   # Telegram handlers, security guards
-├── router.py                # Intent classification (LLM + fallback)
+├── router.py                # Intent classification (LLM classifier)
 ├── llm/
 │   ├── client.py            # Async OpenAI-compatible client
 │   └── prompts.py           # System prompts per pillar
+├── agent/
+│   ├── orchestrator.py      # Central dispatch: workflow | plan | single
+│   ├── workflow.py          # Workflow engine + 4 built-in workflows
+│   ├── planner.py           # LLM goal decomposition (2-7 steps)
+│   ├── executor.py          # Plan step execution + error recovery
+│   ├── plan_store.py        # SQLite plan persistence (resume on restart)
+│   ├── critic.py            # Output quality evaluator
+│   ├── refiner.py           # Iterative output improvement
+│   ├── reflection.py        # Reflection engine (critic + refiner loop)
+│   ├── triggers.py          # Proactive trigger definitions + detection
+│   └── scheduler.py         # Cron-like scheduled task runner
 ├── pillars/
 │   ├── base.py              # Abstract base with shared LLM call
 │   ├── content.py           # Captions, hooks, CTAs, ideas
@@ -172,292 +346,133 @@ digital_mate/
 │   ├── notion_client.py     # Content calendar + campaign tracker
 │   └── search.py            # Tavily + DuckDuckGo fallback
 ├── memory/
-│   ├── database.py          # SQLite schema + async connection
+│   ├── database.py          # SQLite schema (v7) + async connection
 │   ├── session.py           # Per-chat context + auto-cleanup
-│   └── brand_profile.py     # Persistent brand profiles
+│   ├── brand_profile.py     # Persistent brand profiles
+│   ├── key_facts.py         # Long-term memory (auto-extract every 10 msgs)
+│   ├── response_store.py    # Feedback storage (👍/👎/🔄)
+│   └── autocalendar.py      # Auto content calendar generator
+├── prompts/
+│   ├── router.md            # Intent classification rules
+│   ├── content.md           # Content generation expertise
+│   ├── strategy.md          # Strategic planning frameworks
+│   ├── research.md          # Research methodology
+│   ├── analytics.md         # Analytics interpretation
+│   ├── planner.md           # Goal decomposition prompt
+│   └── general.md           # Chitchat / help responses
 └── utils/
     ├── formatting.py        # Telegram markdown helpers
     ├── security.py          # Input/output guards + rate limiting
     ├── validators.py        # Input validation
-    └── keyboards.py          # Inline feedback keyboards (👍/👎/🔄)
+    ├── keyboards.py         # Inline feedback keyboards (👍/👎/🔄)
+    └── image.py             # Vision / image processing
 ```
 
 ## Current Capabilities & Limitations
 
-### What Digital Mate can do today (AI Assistant level)
+### What Digital Mate can do today (Agentic AI)
 
-- **Intent routing** — classify user messages into 4 marketing pillars + general
+- **Intent routing** — LLM-based classifier routes messages into 4 marketing pillars + general
 - **Single-turn generation** — one LLM call per user message, streaming to user
+- **Multi-step workflows** — 4 built-in workflows (Research→Content, Research→Strategy, Analytics→Strategy, Strategy→Content)
+- **Goal decomposition** — LLM planner breaks complex goals into 2–7 executable steps
+- **Plan persistence** — Plans survive restarts, auto-resume on startup
+- **Self-reflection** — Critic + refiner loop auto-optimizes Content/Strategy output (max 2 rounds)
+- **Proactive triggers** — Trend digests, content reminders, campaign alerts via scheduler
+- **Long-term memory** — Key facts extracted every 10 messages, injected into future prompts
+- **Vision** — Image analysis for screenshots, ads, analytics dashboards
+- **Multi-language** — EN, ID, ES, ZH, JA support
 - **Brand personalization** — brand profile injected into prompts
 - **Session memory** — sliding window of recent conversation per chat
 - **Tool integration** — Notion (read/write), web search (DuckDuckGo/Tavily)
-- **Autonomous scheduling** — auto-calendar generator runs on a loop
 - **Feedback loop** — 👍/👎/🔄 buttons stored in DB for future training
 - **Security** — input/output guards, rate limiting, injection detection
 
-### What Digital Mate cannot do yet (gap to Agentic)
+### Remaining limitations
 
-- **Goal decomposition** — cannot break "launch a product" into sub-tasks
-- **Tool chaining** — cannot use search results as input to content generation in one turn
-- **Self-reflection** — cannot evaluate its own output and iterate without user prompt
-- **Proactive actions** — cannot initiate conversations or notifications
-- **Long-term memory** — no cross-session key facts (only brand profile + session window)
-- **Multi-modal input** — cannot accept images, screenshots, or files
+- **No direct social posting** — generates content but cannot post to social platforms
+- **No team collaboration** — brand profiles are per-chat, not shared across users
+- **No image generation** — analyzes images but cannot generate them
+- **No CRM integration** — no HubSpot, Salesforce, or similar connections
 
 ---
 
 ## Agentic Roadmap
 
-The roadmap from AI Assistant to Agentic AI is divided into 4 phases. Each phase builds on the previous one and is independently deployable.
+All four agentic phases are **✅ COMPLETE**.
 
-### Phase 1: Tool Chaining & Multi-Step Workflows
+### ✅ Phase 1: Tool Chaining & Multi-Step Workflows — COMPLETE
 
 **Goal:** Enable the bot to use multiple tools in sequence within a single user request.
 
-**Key capability:** Output from Tool A becomes input to Tool B — without user intervention.
-
-```
-User: "Buat caption berdasarkan tren skincare terbaru"
-
-Current:  Router → Content Pillar → LLM → "Here's a generic caption"
-Phase 1:  Router → Research Pillar (search) → Content Pillar (uses research) → LLM → "Caption based on real trends"
-```
-
-**Components to build:**
-
-| Component | Description |
-|-----------|-------------|
-| `agent/orchestrator.py` | Receives classified intent, decides if multi-step is needed, chains pillars |
-| `agent/workflow.py` | Workflow definitions — ordered sequences of pillar calls with data passing |
-| Pillar `handle()` returns structured data | Not just text — return `{text, metadata, sources}` so downstream pillars can use it |
-
-**Example workflows:**
-
-1. **Research → Content:** Search trends → generate caption referencing found trends
-2. **Research → Strategy:** Competitor analysis → marketing plan addressing gaps
-3. **Analytics → Strategy:** Interpret metrics → improvement recommendations
-4. **Strategy → Content:** Marketing plan → content calendar from the plan
-
-**Implementation approach:**
-
-- Add a `WorkflowEngine` that accepts a workflow definition (list of steps)
-- Each step specifies: pillar, action, input mapping (from previous step's output)
-- The engine executes steps sequentially, passing data between them
-- The router can detect when a message needs multi-step (e.g., "based on trends" → trigger research→content)
-- Progress is streamed to user: "🔍 Searching trends... → ✍️ Writing caption..."
-
-**Estimated effort:** 2-3 implementation sessions
+**Delivered:**
+- `agent/orchestrator.py` — receives classified intent, decides if multi-step is needed, chains pillars
+- `agent/workflow.py` — workflow definitions with 4 built-in workflows
+- Pillar `handle()` returns structured data — `{text, metadata, sources}` for downstream use
+- Progress streaming to user during workflow execution
 
 ---
 
-### Phase 2: Goal Decomposition & Planning
+### ✅ Phase 2: Goal Decomposition & Planning — COMPLETE
 
 **Goal:** Bot can break complex requests into a plan, execute it step by step, and report results.
 
-**Key capability:** User gives a high-level goal → bot creates a plan → executes → delivers.
-
-```
-User: "Bantu launching produk skincare baru"
-
-Bot internal plan:
-  1. Research tren skincare terbaru        → Research pillar + search
-  2. Analisis 3 kompetitor utama           → Research pillar + search
-  3. Buat positioning & strategy           → Strategy pillar
-  4. Generate content calendar (2 minggu)  → Content pillar + Notion
-  5. Draft 5 caption IG/TikTok             → Content pillar
-  6. Buat metrics tracker                  → Analytics pillar + Notion
-  → Deliver: summary + links to Notion + sample captions
-```
-
-**Components to build:**
-
-| Component | Description |
-|-----------|-------------|
-| `agent/planner.py` | LLM-powered planner — takes user goal, outputs ordered step list |
-| `agent/executor.py` | Executes plan steps, handles failures, retries, and re-planning |
-| `agent/plan_store.py` | Persist active plans to SQLite (resume after bot restart) |
-| `/plan` command | Show current plan progress, allow cancel |
-
-**Planner prompt structure:**
-
-```
-Given a user goal, break it into 2-7 concrete steps.
-Each step must specify:
-  - pillar: which marketing pillar to use
-  - action: specific action within that pillar
-  - input_from: which previous step's output to use (or "user_request")
-  - description: what this step accomplishes
-
-Output as JSON array.
-```
-
-**Progress UX in Telegram:**
-
-```
-🚀 Launch Plan: "Launching produk skincare baru"
-
-✅ Step 1/6: Research tren skincare          [done]
-✅ Step 2/6: Analisis kompetitor              [done]  
-⏳ Step 3/6: Buat positioning strategy        [running...]
-⬜ Step 4/6: Generate content calendar
-⬜ Step 5/6: Draft 5 captions
-⬜ Step 6/6: Setup metrics tracker
-
-[Cancel] [View Details]
-```
-
-**Estimated effort:** 3-4 implementation sessions
+**Delivered:**
+- `agent/planner.py` — LLM-powered planner, takes user goal, outputs 2–7 ordered steps
+- `agent/executor.py` — executes plan steps, handles failures and retries
+- `agent/plan_store.py` — persists active plans to SQLite (resume after restart)
+- `/plan` command — show current plan progress
+- `/cancelplan` command — cancel running plan
+- Plan auto-resume on bot startup
 
 ---
 
-### Phase 3: Self-Reflection & Iterative Refinement
+### ✅ Phase 3: Self-Reflection & Iterative Refinement — COMPLETE
 
 **Goal:** Bot can evaluate its own output quality and iterate before showing the user.
 
-**Key capability:** Generate → self-evaluate → refine → deliver (internal loop).
-
-```
-User: "Buat caption IG untuk skincare launch"
-
-Bot internal:
-  Draft 1: "Skincare baru! Beli sekarang! #skincare #beauty"
-  Self-eval: "Too generic, no hook, weak CTA, no brand voice. Score: 3/10"
-  Draft 2: "Glow up kamu dimulai dari sini ✨ [Brand] skincare series..."
-  Self-eval: "Better hook, clear CTA, matches brand tone. Score: 8/10"
-  → Deliver Draft 2 to user
-```
-
-**Components to build:**
-
-| Component | Description |
-|-----------|-------------|
-| `agent/critic.py` | LLM-powered critic — evaluates output on defined criteria |
-| `agent/refiner.py` | Takes critique feedback, regenerates improved output |
-| Quality rubrics per pillar | Content: hook strength, CTA clarity, brand voice match. Strategy: completeness, feasibility. Research: source quality, relevance. |
-| `MAX_ITERATIONS` config | Prevent infinite loops (default: 2 refinement rounds) |
-
-**Critic prompt structure:**
-
-```
-You are a marketing content critic. Evaluate this output on:
-  1. Hook strength (1-10)
-  2. Brand voice match (1-10)
-  3. CTA clarity (1-10)
-  4. Overall quality (1-10)
-
-If any score < 7, provide specific improvement suggestions.
-Output as JSON: {scores: {..., suggestions: "...", pass: bool}
-```
-
-**When to trigger self-reflection:**
-
-- Always for Strategy pillar (high stakes, long output)
-- Always for Content pillar (quality-sensitive)
-- Optional for Research (if sources < 3, retry with broader query)
-- Skip for Analytics (factual, less subjective)
-- Skip for General/chitchat (low stakes)
-
-**Estimated effort:** 2 implementation sessions
+**Delivered:**
+- `agent/critic.py` — LLM-powered critic evaluates on hook strength, brand voice, CTA clarity, overall quality
+- `agent/refiner.py` — takes critique feedback, regenerates improved output
+- `agent/reflection.py` — orchestrates critic+refiner loop (max 2 iterations)
+- `✨ Auto-optimized` indicator shown to user when reflection improved output
+- Pillar-aware: always for Content/Strategy, conditional for Research, skip for Analytics/General
 
 ---
 
-### Phase 4: Proactive Intelligence & Long-Term Memory
+### ✅ Phase 4: Proactive Intelligence & Long-Term Memory — COMPLETE
 
 **Goal:** Bot can initiate actions based on triggers, and remember key facts across sessions.
 
-**Key capability:** Bot proactively suggests, reminds, and learns — not just responds.
+**Delivered:**
+- `memory/key_facts.py` — stores extracted facts with chat_id association
+- Fact extraction — LLM extracts 0–3 key facts every 10 messages
+- Fact injection — key facts injected into system prompts on future sessions
+- `/forget` command — clear stored facts
+- `agent/triggers.py` — proactive trigger definitions (trend, content reminder, campaign alert)
+- `agent/scheduler.py` — cron-like scheduled task runner
+- `/digest` command — on-demand trend digest
 
-**4A: Long-Term Memory (cross-session key facts)**
+---
 
-| Component | Description |
-|-----------|-------------|
-| `memory/key_facts.py` | Store extracted facts: "user focuses on IG Reels", "budget is small", "F&B industry" |
-| Fact extraction | After each conversation, LLM extracts 0-3 key facts → stored with chat_id |
-| Fact injection | Key facts injected into system prompts on future sessions |
-| `/forget` command | Let user clear stored facts |
+### ✅ Gap Closures — COMPLETE
 
-**4B: Proactive Triggers**
+Three gaps identified during Phase 1–4 implementation, all resolved:
 
-| Trigger | Action |
-|---------|--------|
-| Weekly trend check | Auto-search trends in user's industry → "🔥 Trending this week: [X]. Want a caption?" |
-| Content calendar reminder | "📅 You haven't posted in 3 days. Want me to draft something?" |
-| Campaign performance alert | "📊 Your campaign has been running for 7 days. Want a performance summary?" |
-| Competitor monitoring | "👀 [Competitor] just launched a new product. Want me to analyze?" |
-
-**4C: Scheduled autonomous workflows**
-
-```
-Every Monday 8 AM:
-  1. Search trends in user's industry
-  2. Generate 5 content ideas based on trends + brand profile
-  3. Create Notion calendar entries
-  4. Send Telegram message: "🌅 5 content ideas for this week based on trending topics"
-```
-
-**Estimated effort:** 3-4 implementation sessions
+| Gap | Solution |
+|-----|----------|
+| Keyword-based routing was fragile | LLM-based routing classifier (replaces keyword matching) |
+| Reflection was invisible to user | `✨ Auto-optimized` indicator shown when output improved |
+| Plans lost on restart | Plan auto-resume on bot startup from SQLite persistence |
 
 ---
 
 ### Phase Summary
 
-| Phase | Capability | Key Deliverable | Effort |
+| Phase | Capability | Key Deliverable | Status |
 |-------|-----------|-----------------|--------|
-| **1** | Tool Chaining | `orchestrator.py` + workflow engine | 2-3 sessions |
-| **2** | Goal Decomposition | `planner.py` + `executor.py` + plan persistence | 3-4 sessions |
-| **3** | Self-Reflection | `critic.py` + `refiner.py` + quality rubrics | 2 sessions |
-| **4** | Proactive Intelligence | `key_facts.py` + proactive triggers + scheduled workflows | 3-4 sessions |
-| | | **Total** | **10-13 sessions** |
-
-### Pre-Requisites (before starting Phase 1)
-
-These are the existing Priority items that should be completed first:
-
-- [ ] **Priority 2: Enriched brand profile** — add platform, budget_range, business_stage (enables better workflow decisions)
-- [ ] **Priority 3: Long-term memory** — overlaps with Phase 4A, but basic version needed earlier for workflow context
-- [ ] **Priority 4: Image/media input** — vision capability for analytics screenshots, competitor ads
-
-### Architecture Evolution
-
-```
-Current (AI Assistant):
-┌──────────┐     ┌────────┐     ┌─────────┐
-│  Router  │────▶│ Pillar │────▶│   LLM   │
-└──────────┘     └────────┘     └─────────┘
-
-Phase 1 (Tool Chaining):
-┌──────────┐     ┌──────────────┐     ┌────────┐     ┌─────────┐
-│  Router  │────▶│ Orchestrator │────▶│ Pillar │────▶│   LLM   │
-└──────────┘     │  + Workflow  │     └────────┘     └─────────┘
-                 └──────┬───────┘          │
-                        │                  ▼
-                        │           ┌─────────┐
-                        └──────────▶│  Tools  │ (search, Notion)
-                                    └─────────┘
-
-Phase 2 (Goal Decomposition):
-┌──────────┐     ┌──────────┐     ┌──────────────┐     ┌────────┐
-│  Router  │────▶│ Planner  │────▶│  Executor    │────▶│ Pillar │
-└──────────┘     │ (LLM)    │     │  + Plan Store│     └────────┘
-                 └──────────┘     └──────────────┘
-
-Phase 3 (Self-Reflection):
-┌────────┐     ┌────────┐     ┌────────┐     ┌────────┐
-│ Pillar │────▶│  LLM   │────▶│ Critic │────▶│Refiner │
-└────────┘     └────────┘     └────┬───┘     └───┬────┘
-                                  │ pass?        │
-                                  ▼ no           │ yes
-                              back to LLM ◀──────┘
-                              
-Phase 4 (Proactive):
-┌─────────────┐     ┌────────────┐     ┌────────────┐
-│  Scheduler  │────▶│  Trigger   │────▶│  Workflow  │
-│  (cron)     │     │  Engine    │     │  Engine    │
-└─────────────┘     └────────────┘     └────────────┘
-       │
-       ▼
-┌─────────────┐
-│ Key Facts   │ ◀── extracted from every conversation
-│ (SQLite)    │ ──▶ injected into future prompts
-└─────────────┘
-```
+| **1** | Tool Chaining | `orchestrator.py` + workflow engine | ✅ Complete |
+| **2** | Goal Decomposition | `planner.py` + `executor.py` + plan persistence | ✅ Complete |
+| **3** | Self-Reflection | `critic.py` + `refiner.py` + reflection engine | ✅ Complete |
+| **4** | Proactive Intelligence | `key_facts.py` + triggers + scheduler | ✅ Complete |
+| **Gaps** | Routing, UX, Persistence | LLM classifier, auto-optimized indicator, plan resume | ✅ Complete |

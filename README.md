@@ -10,7 +10,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-105%20Passing-brightgreen?style=for-the-badge)](#testing)
+[![Tests](https://img.shields.io/badge/Tests-510%20Passing-brightgreen?style=for-the-badge)](#testing)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/digitalmate_marketing_bot)
 
 [Features](#features) · [Demo](#demo) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Security](#security) · [Roadmap](#roadmap)
@@ -62,6 +62,41 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 - **What→Why→Do** — Structured interpretation methodology
 - **Action prioritization** — Impact vs. effort matrix for next steps
 
+### 🔄 Tool Chaining — Multi-Step Workflows
+- **Research → Content** — Search trends, then generate captions referencing real data
+- **Research → Strategy** — Competitor analysis feeds into a marketing plan
+- **Analytics → Strategy** — Interpret metrics, then recommend improvements
+- **Strategy → Content** — Marketing plan drives a content calendar
+- Progress streamed to user: "🔍 Searching trends... → ✍️ Writing caption..."
+
+### 🎯 Goal Decomposition — Complex Plans
+- **Automatic planning** — Break "launch a product" into 2–7 concrete steps
+- **Step-by-step execution** — Each step runs the right pillar with the right data
+- **Plan persistence** — Plans survive bot restarts, resume automatically on startup
+- **`/plan` command** — View progress, cancel anytime with `/cancelplan`
+
+### ✨ Self-Reflection — Auto-Optimized Output
+- **Critic + Refiner loop** — Evaluates output on hook strength, brand voice, CTA clarity
+- **Automatic iteration** — Scores < 7 trigger regeneration (up to 2 rounds)
+- **`✨ Auto-optimized`** indicator shown when reflection improved the output
+- **Pillar-aware** — Always runs for Content/Strategy, optional for Research, skips Analytics/General
+
+### 🔔 Proactive Intelligence
+- **Trend digests** — Weekly search for trending topics in the user's industry
+- **Content reminders** — Nudge when the user hasn't posted recently
+- **Campaign alerts** — Flag when a campaign has been running long enough to review
+- **`/digest` command** — Trigger an on-demand trend digest
+
+### 📸 Vision
+- **Image analysis** — Send screenshots, ads, or analytics dashboards
+- **Context-aware** — Vision results feed into the appropriate pillar for interpretation
+- **Multi-format** — Supports photos, documents, and image replies
+
+### 🧠 Long-Term Memory
+- **Key facts extraction** — Auto-extracts 0–3 facts every 10 messages
+- **Cross-session recall** — Facts injected into future prompts for continuity
+- **`/forget` command** — Clear stored key facts on demand
+
 ---
 
 ## 📸 Demo
@@ -90,7 +125,7 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 │                      Telegram Bot                           │
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐    │
 │  │  /start       │   │  /brand      │   │  /calendar   │    │
-│  │  /help        │   │  /research   │   │  /report     │    │
+│  │  /plan        │   │  /digest     │   │  /forget     │    │
 │  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘    │
 │         └──────────────────┼──────────────────┘             │
 │                            ▼                                │
@@ -102,24 +137,30 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 │  └─────────────────────────┬───────────────────────────┘    │
 │                            ▼                                │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │              🧠 Intent Router (LLM)                 │    │
-│  │  classify → content | strategy | research | analytics│    │
-│  │  confidence scoring + keyword fallback               │    │
+│  │         🧠 Intent Router + Routing Classifier       │    │
+│  │  LLM classify → pillar + action                      │    │
+│  │  Route decision → workflow | plan | single           │    │
+│  └─────────────────────────┬───────────────────────────┘    │
+│                            ▼                                │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │              🤖 Agent Orchestrator                  │    │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │    │
+│  │  │ Workflow  │  │ Planner  │  │ Reflection       │  │    │
+│  │  │ Engine    │  │ + Executor│  │ (Critic+Refiner) │  │    │
+│  │  └──────────┘  └──────────┘  └──────────────────┘  │    │
 │  └─────────────────────────┬───────────────────────────┘    │
 │                            ▼                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
 │  │ Content  │  │ Strategy │  │ Research │  │Analytics │    │
 │  │  Pillar  │  │  Pillar  │  │  Pillar  │  │  Pillar  │    │
-│  │ (LLM)   │  │ (LLM)   │  │ (LLM+Web)│  │ (LLM)   │    │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
 │         │              │             │            │          │
 │         └──────────────┼─────────────┼────────────┘          │
 │                        ▼                                     │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │              📦 Infrastructure Layer                 │    │
-│  │  SQLite Session Memory │ Brand Profiles (per-chat)  │    │
-│  │  Notion Integration    │ Tavily/DuckDuckGo Search   │    │
-│  │  Conversation Context  │ Template Engine (.md)      │    │
+│  │  SQLite (sessions, brand, plans, key_facts, triggers)│    │
+│  │  Notion │ Tavily/DuckDuckGo │ Vision │ Scheduler    │    │
 │  └─────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -130,10 +171,13 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 |----------|--------|-----|
 | LLM backend | OpenAI-compatible API | Pluggable — works with OpenAI, Anthropic, local models, any compatible endpoint |
 | Intent routing | LLM classification + keyword fallback | Accurate semantic routing without fine-tuning |
-| Memory | SQLite + session context | Zero-dependency, no external DB needed |
+| Route dispatch | Orchestrator decides: workflow, plan, or single | Same classifier output, three execution paths |
+| Memory | SQLite + session context + key facts | Zero-dependency, no external DB needed |
 | Prompts | `.md` template files | Easy to edit, version control, iterate without code changes |
 | Security | Input/Output/Brand guards | Defense-in-depth against prompt injection, data leakage, role hijacking |
-| Integrations | Notion + Web Search | Real data, not hallucinated marketing advice |
+| Integrations | Notion + Web Search + Vision | Real data, not hallucinated marketing advice |
+| Reflection | Critic + Refiner loop (max 2 rounds) | Quality gate without infinite loops |
+| Planning | LLM planner + executor + SQLite plan store | Survives restarts, supports `/plan` and `/cancelplan` |
 
 ---
 
@@ -196,6 +240,10 @@ sudo systemctl enable --now digital-mate
 | `/calendar` | Generate a weekly content calendar |
 | `/research` | Deep research on a topic, competitor, or trend |
 | `/report` | Create a performance report from your metrics |
+| `/plan` | View active plan progress or start a new goal plan |
+| `/cancelplan` | Cancel the currently running plan |
+| `/digest` | Trigger an on-demand trend digest |
+| `/forget` | Clear stored key facts (long-term memory) |
 | `/history` | View your recent conversations |
 | `/clear` | Reset conversation context |
 
@@ -239,7 +287,7 @@ All user-provided brand fields are sanitized against:
 - XML/ChatML tag injection
 - Markdown separator abuse
 
-**105 automated tests** covering all security scenarios. See [`tests/test_security.py`](tests/test_security.py).
+**510 automated tests** covering all security scenarios. See [`tests/test_security.py`](tests/test_security.py).
 
 ---
 
@@ -253,15 +301,27 @@ pytest
 pytest --cov=digital_mate --cov-report=term-missing
 
 # Run specific test suite
-pytest tests/test_security.py -v    # Security tests
-pytest tests/test_content.py -v    # Content pillar tests
-pytest tests/test_router.py -v     # Intent routing tests
+pytest tests/test_security.py -v        # Security tests
+pytest tests/test_content.py -v         # Content pillar tests
+pytest tests/test_router.py -v          # Intent routing tests
+pytest tests/test_orchestrator.py -v    # Orchestrator + workflow tests
+pytest tests/test_planner.py -v         # Goal decomposition tests
+pytest tests/test_critic.py -v          # Self-reflection critic tests
+pytest tests/test_refiner.py -v         # Self-reflection refiner tests
+pytest tests/test_reflection.py -v      # Reflection engine tests
+pytest tests/test_triggers.py -v        # Proactive trigger tests
+pytest tests/test_scheduler.py -v       # Scheduler tests
+pytest tests/test_key_facts.py -v       # Long-term memory tests
+pytest tests/test_feedback.py -v        # Feedback button tests
 ```
 
 ```
-======================== 105 passed in 12.4s =========================
-  80 functional tests — all pillars, routing, memory, integrations
-  25 security tests — injection, exfiltration, hijacking, leakage
+======================== 510 passed =========================
+  380+ functional tests — all pillars, routing, memory, integrations, agent
+   25+ security tests — injection, exfiltration, hijacking, leakage
+   40+ orchestrator tests — workflows, planning, execution, reflection
+   20+ proactive tests — triggers, scheduler, key facts
+   15+ feedback tests — 👍/👎/🔄 buttons, regenerate flow
 ```
 
 ---
@@ -278,6 +338,17 @@ digital-mate/
 │   ├── llm/
 │   │   ├── client.py         # OpenAI-compatible async client
 │   │   └── prompts.py        # Template engine (.md file loader)
+│   ├── agent/
+│   │   ├── orchestrator.py   # Central dispatch: workflow | plan | single
+│   │   ├── workflow.py       # Workflow engine + 4 built-in workflows
+│   │   ├── planner.py        # LLM goal decomposition (2–7 steps)
+│   │   ├── executor.py       # Plan step execution + error recovery
+│   │   ├── plan_store.py     # SQLite plan persistence (resume on restart)
+│   │   ├── critic.py         # Output quality evaluator
+│   │   ├── refiner.py        # Iterative output improvement
+│   │   ├── reflection.py     # Reflection engine (critic + refiner loop)
+│   │   ├── triggers.py       # Proactive trigger definitions + detection
+│   │   └── scheduler.py      # Cron-like scheduled task runner
 │   ├── pillars/
 │   │   ├── base.py           # Base pillar with shared context
 │   │   ├── content.py        # Content & copywriting pipeline
@@ -289,22 +360,30 @@ digital-mate/
 │   │   ├── content.md        # Content generation expertise
 │   │   ├── strategy.md       # Strategic planning frameworks
 │   │   ├── research.md       # Research methodology
-│   │   └── analytics.md      # Analytics interpretation
+│   │   ├── analytics.md      # Analytics interpretation
+│   │   ├── planner.md        # Goal decomposition prompt
+│   │   └── general.md        # Chitchat / help responses
 │   ├── integrations/
 │   │   ├── notion_client.py  # Notion API integration
 │   │   └── search.py         # Tavily / DuckDuckGo search
 │   ├── memory/
-│   │   ├── database.py       # SQLite async storage
+│   │   ├── database.py       # SQLite async storage (schema v7)
 │   │   ├── session.py        # Conversation context (last N turns)
-│   │   └── brand_profile.py  # Per-chat brand profiles
+│   │   ├── brand_profile.py  # Per-chat brand profiles
+│   │   ├── key_facts.py      # Long-term memory (auto-extract every 10 msgs)
+│   │   ├── response_store.py # Feedback storage (👍/👎/🔄)
+│   │   └── autocalendar.py   # Auto content calendar generator
 │   └── utils/
 │       ├── formatting.py     # Markdown formatting for Telegram
 │       ├── validators.py     # Input validation
-│       └── security.py       # Security guard layer
-├── tests/                    # 105 automated tests
+│       ├── security.py       # Security guard layer
+│       ├── keyboards.py      # Inline feedback keyboards (👍/👎/🔄)
+│       └── image.py          # Vision / image processing
+├── tests/                    # 510 automated tests
 ├── deploy/                   # Systemd service files
 ├── docs/
 │   ├── SPEC.md               # Full technical specification
+│   ├── ARCHITECTURE.md       # Architecture deep-dive
 │   ├── notion-setup.md       # Notion database setup guide
 │   └── screenshots/          # Demo screenshots
 ├── .env.example              # Configuration template
@@ -335,14 +414,14 @@ digital-mate/
 | `SEARCH_PROVIDER` | `duckduckgo` | Search backend (`tavily` or `duckduckgo`) |
 | `TAVILY_API_KEY` | — | Required if using Tavily search |
 | `MAX_HISTORY` | `10` | Conversation context window |
-| `BOT_LANGUAGE` | `en` | Default language (`en` or `id`) |
+| `BOT_LANGUAGE` | `en` | Default language (`en`, `id`, `es`, `zh`, `ja`) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 ---
 
 ## 🗺️ Roadmap
 
-### ✅ Phase 1 — Core (Current)
+### ✅ Phase 1 — Core
 - [x] 4 marketing pillars (content, strategy, research, analytics)
 - [x] LLM-powered intent routing
 - [x] Bilingual support (English + Indonesian)
@@ -352,19 +431,33 @@ digital-mate/
 - [x] Web search integration
 - [x] 105 automated tests
 
-### 🔜 Phase 2 — Expansion
+### ✅ Phase 2 — Agentic Intelligence
+- [x] Tool chaining & multi-step workflows (4 built-in workflows)
+- [x] Goal decomposition & planning (LLM planner, 2–7 steps)
+- [x] Plan persistence & auto-resume on restart
+- [x] Self-reflection engine (critic + refiner, max 2 iterations)
+- [x] Proactive triggers (trend digests, content reminders, campaign alerts)
+- [x] Long-term memory (key facts extraction every 10 messages)
+- [x] `/plan`, `/cancelplan`, `/forget`, `/digest` commands
+- [x] Vision / image input support
+- [x] Multi-language support (EN, ID, ES, ZH, JA)
+- [x] Feedback buttons (👍/👎/🔄)
+- [x] LLM-based routing classifier (replaces keyword matching)
+- [x] Reflection feedback visible to user (✨ Auto-optimized indicator)
+- [x] 510 automated tests
+
+### 🔜 Phase 3 — Expansion
 - [ ] WhatsApp Business API integration
 - [ ] Auto-scheduled weekly content calendars
 - [ ] Image generation for social posts
 - [ ] Analytics dashboard (web UI)
-- [ ] Multi-language support (ES, ZH, JA)
+- [ ] Custom training on brand voice history
 
-### 🚀 Phase 3 — Platform
+### 🚀 Phase 4 — Platform
 - [ ] Team collaboration (shared brand profiles)
 - [ ] A/B testing suggestions with prediction
 - [ ] CRM integration (HubSpot, Salesforce)
 - [ ] Social media scheduling (direct posting)
-- [ ] Custom training on brand voice history
 
 ---
 
@@ -388,6 +481,12 @@ ruff check digital_mate/ tests/
 2. Write prompt template at `digital_mate/prompts/yourpillar.md`
 3. Register in router's pillar map
 4. Add tests in `tests/test_yourpillar.py`
+
+### Adding a New Workflow
+
+1. Define the workflow in `digital_mate/agent/workflow.py`
+2. Add detection logic in `digital_mate/agent/orchestrator.py`
+3. Add tests in `tests/test_workflow.py`
 
 ---
 
