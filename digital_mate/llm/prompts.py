@@ -126,6 +126,9 @@ LANGUAGE_INSTRUCTIONS: dict[str, str] = {
 BRAND_CONTEXT_TEMPLATE = """## 🏢 Brand Context
 - **Brand Name:** $name
 - **Industry:** $industry
+- **Platforms:** $platform_preference
+- **Budget:** $budget_range
+- **Stage:** $business_stage
 - **Target Audience:** $audience
 - **Tone of Voice:** $tone
 - **Key Products/Services:** $products
@@ -296,6 +299,9 @@ def build_brand_context(
     products: str,
     hashtags: str,
     competitors: str = "",
+    platform_preference: str = "",
+    budget_range: str = "",
+    business_stage: str = "",
 ) -> str:
     """Build the brand context string from profile fields.
 
@@ -307,6 +313,9 @@ def build_brand_context(
         products: Key products/services.
         hashtags: Preferred hashtags.
         competitors: Competitor brands.
+        platform_preference: Social media platforms used (comma-separated).
+        budget_range: Marketing budget tier (micro/small/medium/large/enterprise).
+        business_stage: Business journey stage (idea/launch/growth/scale/mature).
 
     Returns:
         Formatted brand context string.
@@ -319,4 +328,7 @@ def build_brand_context(
         products=products,
         hashtags=hashtags,
         competitors=competitors or "Not specified",
+        platform_preference=platform_preference or "Not specified",
+        budget_range=budget_range or "Not specified",
+        business_stage=business_stage or "Not specified",
     )

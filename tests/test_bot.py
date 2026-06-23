@@ -18,6 +18,9 @@ from digital_mate.bot import (
     ASK_PRODUCTS,
     ASK_HASHTAGS,
     ASK_COMPETITORS,
+    ASK_PLATFORM,
+    ASK_BUDGET,
+    ASK_STAGE,
     CONFIRM,
 )
 from digital_mate.router import IntentRouter, RouterResult
@@ -222,13 +225,13 @@ class TestBrandSetupFlow:
 
     @pytest.mark.asyncio
     async def test_brand_competitors(self, sample_settings, mock_llm_client) -> None:
-        """Competitors should advance to CONFIRM."""
+        """Competitors should advance to ASK_PLATFORM."""
         bot = _make_bot(sample_settings, mock_llm_client)
         update = _make_update(text="Google, Microsoft")
         ctx = _make_context(brand={"name": "Acme", "industry": "Tech"})
 
         state = await bot._brand_competitors(update, ctx)
-        assert state == CONFIRM
+        assert state == ASK_PLATFORM
 
     @pytest.mark.asyncio
     async def test_brand_competitors_none(self, sample_settings, mock_llm_client) -> None:
@@ -240,9 +243,108 @@ class TestBrandSetupFlow:
         await bot._brand_competitors(update, ctx)
         assert ctx.chat_data["brand"]["competitors"] == ""
 
+    # ------------------------------------------------------------------
+    # New enriched brand profile states (platform / budget / stage)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_brand_platform(self, sample_settings, mock_llm_client) -> None:
+        """Valid platforms should advance to ASK_BUDGET and store the value."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="Instagram, TikTok, Email")
+        ctx = _make_context(brand={"name": "Acme", "industry": "Tech"})
+
+        state = await bot._brand_platform(update, ctx)
+        assert state == ASK_BUDGET
+        assert ctx.chat_data["brand"]["platform_preference"] == "Instagram, TikTok, Email"
+
+    @pytest.mark.asyncio
+    async def test_brand_platform_none(self, sample_settings, mock_llm_client) -> None:
+        """Typing 'none' for platforms stores an empty string."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="none")
+        ctx = _make_context(brand={"name": "Acme"})
+
+        state = await bot._brand_platform(update, ctx)
+        assert state == ASK_BUDGET
+        assert ctx.chat_data["brand"]["platform_preference"] == ""
+
+    @pytest.mark.asyncio
+    async def test_brand_budget_valid(self, sample_settings, mock_llm_client) -> None:
+        """A valid budget tier advances to ASK_STAGE and stores the normalized tier."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="medium")
+        ctx = _make_context(brand={"name": "Acme"})
+
+        state = await bot._brand_budget(update, ctx)
+        assert state == ASK_STAGE
+        assert ctx.chat_data["brand"]["budget_range"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_brand_budget_normalizes(self, sample_settings, mock_llm_client) -> None:
+        """Free-form budget text containing a tier keyword is normalized."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="Around $500-2000 so medium")
+        ctx = _make_context(brand={"name": "Acme"})
+
+        state = await bot._brand_budget(update, ctx)
+        assert state == ASK_STAGE
+        assert ctx.chat_data["brand"]["budget_range"] == "medium"
+
+    @pytest.mark.asyncio
+    async def test_brand_budget_invalid_reprompts(self, sample_settings, mock_llm_client) -> None:
+        """An unrecognizable budget keeps the user in ASK_BUDGET."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="a million dollars")
+        ctx = _make_context(brand={"name": "Acme"})
+
+        state = await bot._brand_budget(update, ctx)
+        assert state == ASK_BUDGET
+        assert "budget_range" not in ctx.chat_data["brand"]
+
+    @pytest.mark.asyncio
+    async def test_brand_stage_valid(self, sample_settings, mock_llm_client) -> None:
+        """A valid business stage advances to CONFIRM and stores the stage."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="growth")
+        ctx = _make_context(brand={"name": "Acme", "industry": "Tech"})
+
+        state = await bot._brand_stage(update, ctx)
+        assert state == CONFIRM
+        assert ctx.chat_data["brand"]["business_stage"] == "growth"
+
+    @pytest.mark.asyncio
+    async def test_brand_stage_invalid_reprompts(self, sample_settings, mock_llm_client) -> None:
+        """An unrecognizable stage keeps the user in ASK_STAGE."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="something else")
+        ctx = _make_context(brand={"name": "Acme"})
+
+        state = await bot._brand_stage(update, ctx)
+        assert state == ASK_STAGE
+        assert "business_stage" not in ctx.chat_data["brand"]
+
+    @pytest.mark.asyncio
+    async def test_brand_stage_shows_summary(self, sample_settings, mock_llm_client) -> None:
+        """The CONFIRM summary should include the new enriched fields."""
+        bot = _make_bot(sample_settings, mock_llm_client)
+        update = _make_update(text="launch")
+        ctx = _make_context(brand={
+            "name": "Acme", "industry": "Tech", "audience": "devs",
+            "tone": "pro", "products": "SaaS", "hashtags": "#a",
+            "competitors": "B", "platform_preference": "instagram",
+            "budget_range": "small", "business_stage": "launch",
+        })
+
+        await bot._brand_stage(update, ctx)
+        reply_text = update.message.reply_text.call_args[0][0]
+        assert "Platforms" in reply_text
+        assert "Budget" in reply_text
+        assert "Stage" in reply_text
+
     @pytest.mark.asyncio
     async def test_brand_confirm_yes(self, sample_settings, mock_llm_client) -> None:
-        """Typing 'yes' saves the profile and ends conversation."""
+        """Typing 'yes' saves the profile (with enriched fields) and ends conversation."""
         from telegram.ext import ConversationHandler
 
         bot = _make_bot(sample_settings, mock_llm_client)
@@ -251,12 +353,20 @@ class TestBrandSetupFlow:
             "name": "Acme", "industry": "Tech", "audience": "devs",
             "tone": "pro", "products": "SaaS", "hashtags": "#a",
             "competitors": "B",
+            "platform_preference": "instagram,tiktok",
+            "budget_range": "small",
+            "business_stage": "launch",
         })
 
         state = await bot._brand_confirm(update, ctx)
 
         assert state == ConversationHandler.END
         bot.brand_manager.create_or_update.assert_awaited_once()
+        # Verify enriched fields are passed to the BrandProfile
+        saved_profile = bot.brand_manager.create_or_update.call_args[0][0]
+        assert saved_profile.platform_preference == "instagram,tiktok"
+        assert saved_profile.budget_range == "small"
+        assert saved_profile.business_stage == "launch"
 
     @pytest.mark.asyncio
     async def test_brand_confirm_redo(self, sample_settings, mock_llm_client) -> None:

@@ -50,7 +50,19 @@ from cachetools import TTLCache
 logger = logging.getLogger(__name__)
 
 # Brand setup conversation states
-ASK_NAME, ASK_INDUSTRY, ASK_AUDIENCE, ASK_TONE, ASK_PRODUCTS, ASK_HASHTAGS, ASK_COMPETITORS, CONFIRM = range(8)
+(
+    ASK_NAME,
+    ASK_INDUSTRY,
+    ASK_AUDIENCE,
+    ASK_TONE,
+    ASK_PRODUCTS,
+    ASK_HASHTAGS,
+    ASK_COMPETITORS,
+    ASK_PLATFORM,
+    ASK_BUDGET,
+    ASK_STAGE,
+    CONFIRM,
+) = range(11)
 
 
 class DigitalMateBot:
@@ -165,6 +177,9 @@ class DigitalMateBot:
                 ASK_PRODUCTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_products)],
                 ASK_HASHTAGS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_hashtags)],
                 ASK_COMPETITORS: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_competitors)],
+                ASK_PLATFORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_platform)],
+                ASK_BUDGET: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_budget)],
+                ASK_STAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_stage)],
                 CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, self._brand_confirm)],
             },
             fallbacks=[CommandHandler("cancel", self._cmd_cancel)],
@@ -628,6 +643,66 @@ class DigitalMateBot:
         if text.lower() in ("none", "tidak ada", "-"):
             text = ""
         context.chat_data["brand"]["competitors"] = text
+        await update.message.reply_text(
+            "Which *platforms* do you use? (e.g., Instagram, TikTok, YouTube, "
+            "Email, Website — comma-separated, or 'none')",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return ASK_PLATFORM
+
+    async def _brand_platform(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Collect platform preference (social media platforms used)."""
+        text = sanitize_input(update.message.text, max_len=500)
+        if text.lower() in ("none", "tidak ada", "-"):
+            text = ""
+        context.chat_data["brand"]["platform_preference"] = text
+        await update.message.reply_text(
+            "What's your *monthly marketing budget*? 🤔\n"
+            "• micro — under $100\n"
+            "• small — $100-$500\n"
+            "• medium — $500-$2,000\n"
+            "• large — $2,000-$10,000\n"
+            "• enterprise — $10,000+",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return ASK_BUDGET
+
+    async def _brand_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Collect marketing budget range tier."""
+        raw = update.message.text.strip().lower()
+        valid_budgets = ("micro", "small", "medium", "large", "enterprise")
+        # Allow free-form input; normalize to a known tier if possible.
+        budget = next((b for b in valid_budgets if b in raw), "")
+        if not budget:
+            await update.message.reply_text(
+                "Please pick one of: *micro, small, medium, large, enterprise*.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return ASK_BUDGET
+        context.chat_data["brand"]["budget_range"] = budget
+        await update.message.reply_text(
+            "What *stage* is your business at? 🚀\n"
+            "• idea — Just an idea\n"
+            "• launch — Just launched\n"
+            "• growth — Growing steadily\n"
+            "• scale — Scaling up\n"
+            "• mature — Established",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return ASK_STAGE
+
+    async def _brand_stage(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Collect business stage and show the confirmation summary."""
+        raw = update.message.text.strip().lower()
+        valid_stages = ("idea", "launch", "growth", "scale", "mature")
+        stage = next((s for s in valid_stages if s in raw), "")
+        if not stage:
+            await update.message.reply_text(
+                "Please pick one of: *idea, launch, growth, scale, mature*.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return ASK_STAGE
+        context.chat_data["brand"]["business_stage"] = stage
 
         # Show summary for confirmation
         brand = context.chat_data["brand"]
@@ -635,6 +710,9 @@ class DigitalMateBot:
             "📋 *Brand Profile Summary*\n\n"
             f"• *Name:* {brand.get('name', '—')}\n"
             f"• *Industry:* {brand.get('industry', '—')}\n"
+            f"• *Platforms:* {brand.get('platform_preference', '—') or 'None'}\n"
+            f"• *Budget:* {brand.get('budget_range', '—')}\n"
+            f"• *Stage:* {brand.get('business_stage', '—')}\n"
             f"• *Audience:* {brand.get('audience', '—')}\n"
             f"• *Tone:* {brand.get('tone', '—')}\n"
             f"• *Products:* {brand.get('products', '—')}\n"
@@ -662,6 +740,9 @@ class DigitalMateBot:
                 hashtags=brand_data.get("hashtags", ""),
                 competitors=brand_data.get("competitors", ""),
                 language_pref=self.settings.bot_language,
+                platform_preference=brand_data.get("platform_preference", ""),
+                budget_range=brand_data.get("budget_range", ""),
+                business_stage=brand_data.get("business_stage", ""),
             )
 
             try:
@@ -996,6 +1077,9 @@ class DigitalMateBot:
                     products=brand_profile.products,
                     hashtags=brand_profile.hashtags,
                     competitors=brand_profile.competitors,
+                    platform_preference=brand_profile.platform_preference,
+                    budget_range=brand_profile.budget_range,
+                    business_stage=brand_profile.business_stage,
                 )
 
             messages = build_general_messages(

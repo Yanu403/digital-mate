@@ -37,6 +37,9 @@ CREATE TABLE IF NOT EXISTS brand_profiles (
     hashtags TEXT NOT NULL DEFAULT '',
     competitors TEXT NOT NULL DEFAULT '',
     language_pref TEXT NOT NULL DEFAULT 'bilingual',
+    platform_preference TEXT NOT NULL DEFAULT '',
+    budget_range TEXT NOT NULL DEFAULT '',
+    business_stage TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -203,8 +206,40 @@ class AsyncConnection:
         return sqlite3.IntegrityError
 
 
+async def _migrate_brand_profiles(conn: AsyncConnection) -> None:
+    """Run lightweight additive migrations on the brand_profiles table.
+
+    New columns added after the initial release need ALTER TABLE for existing
+    databases (CREATE TABLE IF NOT EXISTS won't add columns to an existing
+    table). Each new column is added only if it doesn't already exist.
+
+    Args:
+        conn: Open AsyncConnection to the database.
+    """
+    # PRAGMA table_info returns one row per column: (cid, name, type, notnull, dflt_value, pk)
+    cursor = await conn.execute("PRAGMA table_info(brand_profiles)")
+    rows = await cursor.fetchall()
+    existing_columns = {row[1] for row in rows}
+
+    new_columns = {
+        "platform_preference": "TEXT NOT NULL DEFAULT ''",
+        "budget_range": "TEXT NOT NULL DEFAULT ''",
+        "business_stage": "TEXT NOT NULL DEFAULT ''",
+    }
+
+    for column_name, column_def in new_columns.items():
+        if column_name not in existing_columns:
+            logger.info("Migrating brand_profiles: adding column %s", column_name)
+            await conn.execute(
+                f"ALTER TABLE brand_profiles ADD COLUMN {column_name} {column_def}"
+            )
+    await conn.commit()
+
+
 async def init_db(db_path: str | Path = "data/digital_mate.db") -> AsyncConnection:
     """Initialize the database, creating tables if they don't exist.
+
+    Runs schema creation plus additive migrations for existing databases.
 
     Args:
         db_path: Path to the SQLite database file.
@@ -220,6 +255,7 @@ async def init_db(db_path: str | Path = "data/digital_mate.db") -> AsyncConnecti
     async_conn = AsyncConnection(conn)
     await async_conn.executescript(SCHEMA_SQL)
     await async_conn.commit()
+    await _migrate_brand_profiles(async_conn)
     logger.info("Database initialized successfully")
     return async_conn
 
@@ -234,4 +270,5 @@ async def init_memory_db() -> AsyncConnection:
     async_conn = AsyncConnection(conn)
     await async_conn.executescript(SCHEMA_SQL)
     await async_conn.commit()
+    await _migrate_brand_profiles(async_conn)
     return async_conn

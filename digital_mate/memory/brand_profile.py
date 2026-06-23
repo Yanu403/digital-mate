@@ -30,6 +30,9 @@ class BrandProfile:
         hashtags: Preferred hashtags (comma-separated).
         competitors: Competitor names (comma-separated).
         language_pref: Language preference (bilingual/en/id).
+        platform_preference: Social media platforms used (comma-separated).
+        budget_range: Marketing budget tier (micro/small/medium/large/enterprise).
+        business_stage: Business journey stage (idea/launch/growth/scale/mature).
     """
     chat_id: int
     name: str
@@ -40,6 +43,9 @@ class BrandProfile:
     hashtags: str = ""
     competitors: str = ""
     language_pref: str = "bilingual"
+    platform_preference: str = ""
+    budget_range: str = ""
+    business_stage: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary.
@@ -79,8 +85,10 @@ class BrandProfileManager:
         try:
             await self.db.execute(
                 """INSERT INTO brand_profiles
-                (chat_id, name, industry, audience, tone, products, hashtags, competitors, language_pref)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (chat_id, name, industry, audience, tone, products, hashtags,
+                 competitors, language_pref, platform_preference, budget_range,
+                 business_stage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     profile.chat_id,
                     profile.name,
@@ -91,6 +99,9 @@ class BrandProfileManager:
                     profile.hashtags,
                     profile.competitors,
                     profile.language_pref,
+                    profile.platform_preference,
+                    profile.budget_range,
+                    profile.business_stage,
                 ),
             )
             await self.db.commit()
@@ -110,7 +121,8 @@ class BrandProfileManager:
         """
         cursor = await self.db.execute(
             """SELECT chat_id, name, industry, audience, tone, products,
-                      hashtags, competitors, language_pref
+                      hashtags, competitors, language_pref,
+                      platform_preference, budget_range, business_stage
             FROM brand_profiles WHERE chat_id = ?""",
             (chat_id,),
         )
@@ -128,6 +140,9 @@ class BrandProfileManager:
             hashtags=row[6],
             competitors=row[7],
             language_pref=row[8],
+            platform_preference=row[9],
+            budget_range=row[10],
+            business_stage=row[11],
         )
 
     async def update(self, profile: BrandProfile) -> BrandProfile:
@@ -146,6 +161,7 @@ class BrandProfileManager:
             """UPDATE brand_profiles SET
                 name=?, industry=?, audience=?, tone=?,
                 products=?, hashtags=?, competitors=?, language_pref=?,
+                platform_preference=?, budget_range=?, business_stage=?,
                 updated_at=CURRENT_TIMESTAMP
             WHERE chat_id=?""",
             (
@@ -157,6 +173,9 @@ class BrandProfileManager:
                 profile.hashtags,
                 profile.competitors,
                 profile.language_pref,
+                profile.platform_preference,
+                profile.budget_range,
+                profile.business_stage,
                 profile.chat_id,
             ),
         )

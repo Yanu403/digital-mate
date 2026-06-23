@@ -136,6 +136,9 @@ class BasePillar(ABC):
             products=profile.products,
             hashtags=profile.hashtags,
             competitors=profile.competitors,
+            platform_preference=profile.platform_preference,
+            budget_range=profile.budget_range,
+            business_stage=profile.business_stage,
         )
 
     async def _generate_response(

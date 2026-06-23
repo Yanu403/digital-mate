@@ -130,6 +130,9 @@ def sample_brand_profile() -> BrandProfile:
         hashtags="#CoffeeLovers, #SpecialtyCoffee, #SustainableBrew",
         competitors="Blue Bottle, Stumptown, Intelligentsia",
         language_pref="bilingual",
+        platform_preference="instagram,tiktok,email",
+        budget_range="medium",
+        business_stage="growth",
     )
 
 
