@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from digital_mate.pillars.base import BasePillar
+from digital_mate.pillars.base import BasePillar, PillarResult
 from digital_mate.memory.brand_profile import BrandProfile
 from digital_mate.integrations.search import SearchService, format_search_context
 
@@ -68,9 +68,40 @@ class ResearchPillar(BasePillar):
         Returns:
             Generated research response.
         """
+        result = await self.handle_structured(
+            user_message=user_message,
+            action=action,
+            context=context,
+            brand_profile=brand_profile,
+            **kwargs,
+        )
+        return result.text
+
+    async def handle_structured(
+        self,
+        user_message: str,
+        action: str,
+        context: list[dict[str, str]],
+        brand_profile: BrandProfile | None = None,
+        **kwargs: Any,
+    ) -> PillarResult:
+        """Handle a research message and return structured result with sources.
+
+        Args:
+            user_message: The user's message text.
+            action: Classified action (trends, competitors, etc.).
+            context: Recent conversation context.
+            brand_profile: Optional brand profile for personalization.
+            **kwargs: Additional arguments.
+
+        Returns:
+            PillarResult with text, search metadata, and source URLs.
+        """
         brand_context = self._build_brand_context(brand_profile)
         key_facts = kwargs.get("key_facts", "")
         search_context = ""
+        search_query = ""
+        extracted_urls: list[str] = []
 
         # Perform web search for research actions that benefit from real-time data
         if self.search_service and action in ("trends", "competitors", "audience", "keywords", "benchmarks"):
@@ -78,6 +109,7 @@ class ResearchPillar(BasePillar):
                 search_query = self._build_search_query(user_message, action, brand_profile)
                 search_results = await self.search_service.search(search_query, max_results=5)
                 search_context = format_search_context(search_results)
+                extracted_urls = [r.url for r in search_results if hasattr(r, "url") and r.url]
                 logger.debug("Search results for research: %d results", len(search_results))
             except Exception as exc:
                 logger.warning("Search failed for research pillar: %s", exc)
@@ -92,7 +124,14 @@ class ResearchPillar(BasePillar):
             key_facts=key_facts,
         )
 
-        return response
+        return PillarResult(
+            text=response,
+            metadata={
+                "search_query": search_query,
+                "search_context": search_context,
+            },
+            sources=extracted_urls,
+        )
 
     def _build_search_query(
         self,

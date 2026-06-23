@@ -47,6 +47,7 @@ from digital_mate.pillars.autocalendar import CalendarGenerator
 from digital_mate.memory.autocalendar import AutoCalendarEntry as CalendarEntry
 from digital_mate.utils.keyboards import feedback_keyboard
 from digital_mate.utils.image import encode_image_file
+from digital_mate.agent.orchestrator import Orchestrator
 from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,9 @@ class DigitalMateBot:
             "research": self.research_pillar,
             "analytics": self.analytics_pillar,
         }
+
+        # Orchestrator for multi-step workflow chaining (Phase 1)
+        self._orchestrator = Orchestrator(self._pillars)
 
         self._rate_limits: TTLCache[int, RateLimitState] = TTLCache(maxsize=1000, ttl=3600)
         self.app: Application | None = None
@@ -868,7 +872,43 @@ class DigitalMateBot:
 
             pillar = None
             sent_messages: list = [placeholder]  # track messages we may attach buttons to
-            if result.is_general:
+
+            # --- Phase 1: Try orchestrator for multi-step workflows ---
+            orchestrated = False
+            response = ""  # Will be set by orchestrator or pillar dispatch
+            if not result.is_general and self._orchestrator:
+                try:
+                    async def _workflow_progress(msg: str) -> None:
+                        try:
+                            await placeholder.edit_text(msg)
+                        except Exception:
+                            pass
+
+                    response_text, was_workflow = await self._orchestrator.execute(
+                        user_message=user_message,
+                        pillar=result.pillar,
+                        action=result.action,
+                        context=ctx,
+                        brand_profile=brand_profile,
+                        key_facts=key_facts_text,
+                        on_progress=_workflow_progress,
+                    )
+                    if was_workflow:
+                        orchestrated = True
+                        response = response_text
+                        chunks = split_message(response)
+                        if chunks:
+                            try:
+                                await placeholder.edit_text(chunks[0])
+                            except Exception as exc:
+                                logger.warning("edit_text failed for workflow response: %s", exc)
+                            for extra in chunks[1:]:
+                                sent_messages.append(await update.message.reply_text(extra))
+                except Exception as exc:
+                    logger.warning("Orchestrator failed, falling back to single pillar: %s", exc)
+
+            # --- Normal dispatch (single pillar or general) ---
+            if not orchestrated and result.is_general:
                 response = await self._handle_general(
                     user_message, result, ctx, brand_profile,
                     key_facts=key_facts_text,
@@ -884,7 +924,7 @@ class DigitalMateBot:
                         sent_messages.append(
                             await update.message.reply_text(extra)
                         )
-            else:
+            elif not orchestrated:
                 # Dispatch to pillar — stream tokens into the placeholder.
                 pillar = self._pillars.get(result.pillar)
                 if pillar and hasattr(pillar, "handle_stream"):

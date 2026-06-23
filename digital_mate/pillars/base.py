@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from digital_mate.llm.client import LLMClient, LLMError
@@ -14,6 +15,21 @@ from digital_mate.llm.prompts import build_pillar_messages, build_brand_context
 from digital_mate.memory.brand_profile import BrandProfile
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class PillarResult:
+    """Structured result from a pillar handler.
+
+    Attributes:
+        text: The formatted response text for the user.
+        metadata: Structured data for downstream pillars (e.g. search results).
+        sources: List of source URLs or references used.
+    """
+
+    text: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    sources: list[str] = field(default_factory=list)
 
 
 class BasePillar(ABC):
@@ -196,6 +212,38 @@ class BasePillar(ABC):
                 "Please try again in a moment.\n\n"
                 f"(Error: {exc})"
             )
+
+    async def handle_structured(
+        self,
+        user_message: str,
+        action: str,
+        context: list[dict[str, str]],
+        brand_profile: BrandProfile | None = None,
+        **kwargs: Any,
+    ) -> PillarResult:
+        """Handle a message and return a structured PillarResult.
+
+        Default implementation wraps handle() output. Subclasses may override
+        to include metadata (e.g. search results, sources).
+
+        Args:
+            user_message: The user's message text.
+            action: The classified action from the router.
+            context: Recent conversation context.
+            brand_profile: Optional brand profile for personalization.
+            **kwargs: Additional pillar-specific arguments.
+
+        Returns:
+            PillarResult with text, metadata, and sources.
+        """
+        text = await self.handle(
+            user_message=user_message,
+            action=action,
+            context=context,
+            brand_profile=brand_profile,
+            **kwargs,
+        )
+        return PillarResult(text=text)
 
     async def _generate_response(
         self,
