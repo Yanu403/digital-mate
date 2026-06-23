@@ -88,13 +88,14 @@ class BasePillar(ABC):
             action: The classified action from the router.
             context: Recent conversation context.
             brand_profile: Optional brand profile for personalization.
-            **kwargs: Additional pillar-specific arguments (e.g. search_context).
+            **kwargs: Additional pillar-specific arguments (e.g. search_context, key_facts).
 
         Yields:
             Text chunks (delta content) from the LLM stream.
         """
         brand_context = self._build_brand_context(brand_profile)
         search_context = kwargs.get("search_context", "")
+        key_facts = kwargs.get("key_facts", "")
         messages = build_pillar_messages(
             user_message=user_message,
             pillar=self.PILLAR_NAME,
@@ -103,6 +104,7 @@ class BasePillar(ABC):
             bot_name=self.bot_name,
             brand_context=brand_context,
             search_context=search_context,
+            key_facts=key_facts,
         )
         try:
             async for chunk in self.llm_client.chat_stream(
@@ -147,6 +149,7 @@ class BasePillar(ABC):
         context: list[dict[str, str]],
         brand_context: str = "",
         search_context: str = "",
+        key_facts: str = "",
     ) -> str:
         """Generate an LLM response for this pillar.
 
@@ -155,6 +158,7 @@ class BasePillar(ABC):
             context: Conversation context.
             brand_context: Brand profile context.
             search_context: Search results context (Research pillar).
+            key_facts: Key facts context for personalization.
 
         Returns:
             LLM-generated response text.
@@ -167,6 +171,7 @@ class BasePillar(ABC):
             bot_name=self.bot_name,
             brand_context=brand_context,
             search_context=search_context,
+            key_facts=key_facts,
         )
 
         try:

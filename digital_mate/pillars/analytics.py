@@ -68,6 +68,7 @@ class AnalyticsPillar(BasePillar):
             Generated analytics response.
         """
         brand_context = self._build_brand_context(brand_profile)
+        key_facts = kwargs.get("key_facts", "")
         campaign_context = ""
 
         # Fetch campaign data from Notion if available
@@ -88,6 +89,7 @@ class AnalyticsPillar(BasePillar):
             user_message=enhanced_message,
             context=context,
             brand_context=brand_context,
+            key_facts=key_facts,
         )
 
         return response

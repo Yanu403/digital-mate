@@ -46,12 +46,14 @@ class StrategyPillar(BasePillar):
             Generated strategy response.
         """
         brand_context = self._build_brand_context(brand_profile)
+        key_facts = kwargs.get("key_facts", "")
         enhanced_message = self._enhance_message(user_message, action)
 
         response = await self._generate_response(
             user_message=enhanced_message,
             context=context,
             brand_context=brand_context,
+            key_facts=key_facts,
         )
 
         return response

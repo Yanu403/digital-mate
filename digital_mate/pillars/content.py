@@ -45,6 +45,7 @@ class ContentPillar(BasePillar):
             Generated content response.
         """
         brand_context = self._build_brand_context(brand_profile)
+        key_facts = kwargs.get("key_facts", "")
 
         # Add action-specific instructions to the user message
         enhanced_message = self._enhance_message(user_message, action)
@@ -53,6 +54,7 @@ class ContentPillar(BasePillar):
             user_message=enhanced_message,
             context=context,
             brand_context=brand_context,
+            key_facts=key_facts,
         )
 
         return response

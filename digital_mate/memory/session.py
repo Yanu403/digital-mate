@@ -83,6 +83,22 @@ class SessionManager:
         # Reverse to get chronological order
         return [{"role": row[0], "content": row[1]} for row in reversed(rows)]
 
+    async def get_message_count(self, chat_id: int) -> int:
+        """Get the number of messages stored for a chat.
+
+        Args:
+            chat_id: Telegram chat ID.
+
+        Returns:
+            Number of messages for the given chat_id.
+        """
+        cursor = await self.db.execute(
+            "SELECT COUNT(*) FROM sessions WHERE chat_id = ?",
+            (chat_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
     async def clear(self, chat_id: int) -> int:
         """Clear all session context for a chat.
 

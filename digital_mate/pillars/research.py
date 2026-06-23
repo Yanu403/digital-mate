@@ -69,6 +69,7 @@ class ResearchPillar(BasePillar):
             Generated research response.
         """
         brand_context = self._build_brand_context(brand_profile)
+        key_facts = kwargs.get("key_facts", "")
         search_context = ""
 
         # Perform web search for research actions that benefit from real-time data
@@ -88,6 +89,7 @@ class ResearchPillar(BasePillar):
             context=context,
             brand_context=brand_context,
             search_context=search_context,
+            key_facts=key_facts,
         )
 
         return response

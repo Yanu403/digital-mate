@@ -34,6 +34,7 @@ from digital_mate.pillars.research import ResearchPillar
 from digital_mate.pillars.analytics import AnalyticsPillar
 from digital_mate.memory.session import SessionManager
 from digital_mate.memory.brand_profile import BrandProfileManager, BrandProfile
+from digital_mate.memory.key_facts import KeyFactManager
 from digital_mate.integrations.notion_client import NotionService
 from digital_mate.integrations.search import SearchService
 from digital_mate.utils.formatting import split_message, format_calendar_week, format_calendar_entry
@@ -83,6 +84,7 @@ class DigitalMateBot:
         search_service: SearchService | None = None,
         autocalendar_manager: AutoCalendarManager | None = None,
         response_store: ResponseStore | None = None,
+        key_fact_manager: KeyFactManager | None = None,
     ) -> None:
         """Initialize the bot with all services.
 
@@ -97,6 +99,7 @@ class DigitalMateBot:
             autocalendar_manager: Optional auto-calendar subscription manager.
             response_store: Optional response store for feedback buttons.
                 When None, feedback buttons are not attached to responses.
+            key_fact_manager: Optional key fact manager for long-term memory.
         """
         self.settings = settings
         self.llm_client = llm_client
@@ -107,6 +110,7 @@ class DigitalMateBot:
         self.search_service = search_service
         self.autocalendar_manager = autocalendar_manager
         self.response_store = response_store
+        self.key_fact_manager = key_fact_manager
         self._calendar_generator: CalendarGenerator | None = None
         if autocalendar_manager is not None:
             self._calendar_generator = CalendarGenerator(
@@ -812,6 +816,11 @@ class DigitalMateBot:
             # Get brand profile
             brand_profile = await self.brand_manager.get(chat_id)
 
+            # Get key facts for personalization
+            key_facts_text = ""
+            if self.key_fact_manager:
+                key_facts_text = await self.key_fact_manager.get_facts_context(chat_id)
+
             # Classify intent
             result = await self.router.classify(user_message, ctx, chat_id=chat_id)
             logger.info(
@@ -835,7 +844,10 @@ class DigitalMateBot:
             pillar = None
             sent_messages: list = [placeholder]  # track messages we may attach buttons to
             if result.is_general:
-                response = await self._handle_general(user_message, result, ctx, brand_profile)
+                response = await self._handle_general(
+                    user_message, result, ctx, brand_profile,
+                    key_facts=key_facts_text,
+                )
                 # Edit the placeholder with the final (possibly long) response.
                 chunks = split_message(response)
                 if chunks:
@@ -857,6 +869,7 @@ class DigitalMateBot:
                         action=result.action,
                         context=ctx,
                         brand_profile=brand_profile,
+                        key_facts=key_facts_text,
                     )
                 elif pillar:
                     # Fallback: pillar has no handle_stream — use non-streaming handle.
@@ -865,6 +878,7 @@ class DigitalMateBot:
                         action=result.action,
                         context=ctx,
                         brand_profile=brand_profile,
+                        key_facts=key_facts_text,
                     )
                     chunks = split_message(response)
                     if chunks:
@@ -898,6 +912,19 @@ class DigitalMateBot:
             # Save to session context
             await self.session_manager.add_message(chat_id, "user", user_message)
             await self.session_manager.add_message(chat_id, "assistant", response)
+
+            # Background key fact extraction every 10 messages
+            if self.key_fact_manager and self.llm_client:
+                try:
+                    msg_count = await self.session_manager.get_message_count(chat_id)
+                    if msg_count > 0 and msg_count % 10 == 0:
+                        asyncio.create_task(
+                            self.key_fact_manager.extract_facts_from_conversation(
+                                chat_id, self.llm_client, ctx
+                            )
+                        )
+                except Exception as exc:
+                    logger.warning("Key fact extraction trigger failed for chat %d: %s", chat_id, exc)
 
             # Determine whether to attach feedback buttons.
             # Only pillar responses (content/strategy/research/analytics) get
@@ -955,6 +982,7 @@ class DigitalMateBot:
         action: str,
         context: list[dict[str, str]],
         brand_profile: BrandProfile | None,
+        key_facts: str = "",
     ) -> str:
         """Stream a pillar response into the placeholder message.
 
@@ -976,6 +1004,7 @@ class DigitalMateBot:
             action: The classified action.
             context: Conversation context.
             brand_profile: Optional brand profile.
+            key_facts: Key facts context for personalization.
 
         Returns:
             The full accumulated response text.
@@ -992,6 +1021,7 @@ class DigitalMateBot:
             action=action,
             context=context,
             brand_profile=brand_profile,
+            key_facts=key_facts,
         ):
             buffer += chunk
             now = time.monotonic()
@@ -1031,6 +1061,7 @@ class DigitalMateBot:
         result: Any,
         context: list[dict[str, str]],
         brand_profile: BrandProfile | None,
+        key_facts: str = "",
     ) -> str:
         """Handle general (non-pillar) intents.
 
@@ -1042,6 +1073,7 @@ class DigitalMateBot:
             result: Router result.
             context: Conversation context.
             brand_profile: Optional brand profile.
+            key_facts: Key facts context for personalization.
 
         Returns:
             Response text.
@@ -1088,6 +1120,7 @@ class DigitalMateBot:
                 language=self.settings.bot_language,
                 bot_name=self.settings.bot_name,
                 brand_context=brand_ctx or None,
+                key_facts=key_facts,
             )
 
             try:

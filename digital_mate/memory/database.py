@@ -92,9 +92,23 @@ CREATE TABLE IF NOT EXISTS feedback_log (
 
 CREATE INDEX IF NOT EXISTS idx_feedback_log_chat_id ON feedback_log(chat_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_log_created_at ON feedback_log(created_at);
+
+CREATE TABLE IF NOT EXISTS key_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    fact_text TEXT NOT NULL,
+    fact_category TEXT DEFAULT 'general',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active INTEGER DEFAULT 1,
+    UNIQUE(chat_id, fact_text)
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_facts_chat_id ON key_facts(chat_id);
+CREATE INDEX IF NOT EXISTS idx_key_facts_active ON key_facts(is_active);
 """
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 class AsyncCursor:

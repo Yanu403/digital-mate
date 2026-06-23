@@ -182,6 +182,7 @@ def build_pillar_messages(
     bot_name: str = "Digital Mate",
     brand_context: str = "",
     search_context: str = "",
+    key_facts: str = "",
 ) -> list[dict[str, str]]:
     """Build the message list for a pillar LLM call.
 
@@ -195,11 +196,15 @@ def build_pillar_messages(
         bot_name: Bot display name.
         brand_context: Formatted brand profile string.
         search_context: Search results for research pillar.
+        key_facts: Formatted key facts string for personalization.
 
     Returns:
         List of message dicts for the LLM.
     """
     lang_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["bilingual"])
+
+    # Build the full brand context (including key facts if provided)
+    full_brand_context = build_brand_context_with_facts(brand_context, key_facts)
 
     prompt_map = {
         "content": CONTENT_SYSTEM_PROMPT,
@@ -211,7 +216,7 @@ def build_pillar_messages(
     template = prompt_map.get(pillar, CONTENT_SYSTEM_PROMPT)
     pillar_prompt = Template(template).safe_substitute(
         bot_name=bot_name,
-        brand_context=brand_context or (
+        brand_context=full_brand_context or (
             "## Brand Context\n"
             "No brand profile configured. Respond with best-practice general advice. "
             "Do NOT repeatedly ask the user to set up a brand profile — mention it at most "
@@ -247,6 +252,7 @@ def build_general_messages(
     language: str = "bilingual",
     bot_name: str = "Digital Mate",
     brand_context: str | None = None,
+    key_facts: str = "",
 ) -> list[dict[str, str]]:
     """Build the message list for general (non-pillar) LLM calls.
 
@@ -259,15 +265,19 @@ def build_general_messages(
         language: Language setting.
         bot_name: Bot display name.
         brand_context: Optional brand context string.
+        key_facts: Formatted key facts string for personalization.
 
     Returns:
         List of message dicts for the LLM.
     """
     lang_instruction = LANGUAGE_INSTRUCTIONS.get(language, LANGUAGE_INSTRUCTIONS["bilingual"])
 
+    # Build the full brand context (including key facts if provided)
+    full_brand_context = build_brand_context_with_facts(brand_context or "", key_facts)
+
     general_prompt = Template(GENERAL_SYSTEM_PROMPT).safe_substitute(
         bot_name=bot_name,
-        brand_context=brand_context or (
+        brand_context=full_brand_context or (
             "## Brand Context\n"
             "No brand profile configured. No need to mention it."
         ),
@@ -291,6 +301,44 @@ def build_general_messages(
     return messages
 
 
+# ---------------------------------------------------------------------------
+# Key facts context
+# ---------------------------------------------------------------------------
+
+def build_key_facts_context(facts_text: str) -> str:
+    """Wrap key facts text in a formatted section for prompt injection.
+
+    Args:
+        facts_text: Pre-formatted facts string (e.g., from KeyFactManager.get_facts_context).
+
+    Returns:
+        The facts_text as-is if non-empty, or empty string.
+    """
+    if not facts_text or not facts_text.strip():
+        return ""
+    return facts_text
+
+
+def build_brand_context_with_facts(brand_context: str, key_facts: str) -> str:
+    """Combine brand context and key facts into a single context string.
+
+    Args:
+        brand_context: Formatted brand profile string (may be empty).
+        key_facts: Formatted key facts string (may be empty).
+
+    Returns:
+        Combined string with brand context followed by key facts,
+        or just whichever section is non-empty.
+    """
+    parts: list[str] = []
+    if brand_context and brand_context.strip():
+        parts.append(brand_context.strip())
+    facts = build_key_facts_context(key_facts)
+    if facts:
+        parts.append(facts)
+    return "\n\n".join(parts) if parts else ""
+
+
 def build_brand_context(
     name: str,
     industry: str,
@@ -302,6 +350,7 @@ def build_brand_context(
     platform_preference: str = "",
     budget_range: str = "",
     business_stage: str = "",
+    key_facts: str = "",
 ) -> str:
     """Build the brand context string from profile fields.
 
@@ -316,11 +365,12 @@ def build_brand_context(
         platform_preference: Social media platforms used (comma-separated).
         budget_range: Marketing budget tier (micro/small/medium/large/enterprise).
         business_stage: Business journey stage (idea/launch/growth/scale/mature).
+        key_facts: Optional key facts string to append after brand info.
 
     Returns:
-        Formatted brand context string.
+        Formatted brand context string, with key facts appended if non-empty.
     """
-    return Template(BRAND_CONTEXT_TEMPLATE).safe_substitute(
+    base_context = Template(BRAND_CONTEXT_TEMPLATE).safe_substitute(
         name=name,
         industry=industry,
         audience=audience,
@@ -332,3 +382,9 @@ def build_brand_context(
         budget_range=budget_range or "Not specified",
         business_stage=business_stage or "Not specified",
     )
+
+    # Append key facts section if provided
+    facts = build_key_facts_context(key_facts)
+    if facts:
+        return base_context + "\n\n" + facts
+    return base_context
