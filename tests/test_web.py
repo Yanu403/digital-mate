@@ -228,6 +228,186 @@ class TestIndexPage:
         resp = client.get("/")
         assert "#0a0a12" in resp.text
 
+    def test_index_has_prompts_nav(self, client):
+        resp = client.get("/")
+        assert "prompts" in resp.text.lower()
+        assert "page-prompts" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Prompt API Tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def client_with_prompts(tmp_path):
+    """Create a test client with prompt files in place."""
+    # Create prompt directory structure
+    prompts_dir = tmp_path / "digital_mate" / "prompts"
+    prompts_dir.mkdir(parents=True)
+
+    # Create AGENT.md
+    agent_md = tmp_path / "digital_mate" / "AGENT.md"
+    agent_md.write_text("# Agent Definition\n\nTest agent personality.\n", encoding="utf-8")
+
+    # Create prompt files
+    prompt_files = {
+        "router.md": "# Intent Router\n\nClassify user intents.\n",
+        "content.md": "# Content Expert\n\nGenerate content.\n",
+        "strategy.md": "# Strategy Expert\n\nStrategic planning.\n",
+        "research.md": "# Research Expert\n\nResearch methodology.\n",
+        "analytics.md": "# Analytics Expert\n\nAnalytics interpretation.\n",
+        "planner.md": "# Goal Planner\n\nGoal decomposition.\n",
+        "general.md": "# General Chat\n\nChitchat responses.\n",
+    }
+    for name, content in prompt_files.items():
+        (prompts_dir / name).write_text(content, encoding="utf-8")
+
+    with patch("digital_mate.web.app.PROJECT_ROOT", tmp_path):
+        from digital_mate.web.app import create_app
+        app = create_app()
+        yield TestClient(app)
+
+
+class TestPromptListEndpoint:
+    """Tests for GET /api/prompts."""
+
+    def test_list_prompts(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 8
+        # Check structure
+        for item in data:
+            assert "path" in item
+            assert "name" in item
+            assert "description" in item
+            assert "group" in item
+            assert "size" in item
+            assert "modified" in item
+
+    def test_list_prompts_has_agent_md(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts")
+        data = resp.json()
+        paths = [p["path"] for p in data]
+        assert "AGENT.md" in paths
+
+    def test_list_prompts_has_all_groups(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts")
+        data = resp.json()
+        groups = {p["group"] for p in data}
+        assert "Core" in groups
+        assert "Pillars" in groups
+        assert "Agent" in groups
+
+    def test_list_prompts_metadata(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts")
+        data = resp.json()
+        agent = next(p for p in data if p["path"] == "AGENT.md")
+        assert agent["name"] == "Agent Personality"
+        assert agent["group"] == "Core"
+        assert agent["size"] > 0
+        assert agent["modified"] is not None
+
+
+class TestPromptReadEndpoint:
+    """Tests for GET /api/prompts/{path}."""
+
+    def test_read_agent_md(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts/AGENT.md")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "AGENT.md"
+        assert data["name"] == "Agent Personality"
+        assert "Agent Definition" in data["content"]
+        assert "modified" in data
+
+    def test_read_prompt_file(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts/prompts/content.md")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["path"] == "prompts/content.md"
+        assert "Content Expert" in data["content"]
+
+    def test_read_nonexistent_file(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts/prompts/nonexistent.md")
+        assert resp.status_code == 400  # Not in allowed list
+
+    def test_read_traversal_rejected(self, client_with_prompts):
+        resp = client_with_prompts.get("/api/prompts/../../../etc/passwd")
+        # FastAPI normalizes paths, stripping .. → results in 404
+        assert resp.status_code in (400, 404)
+
+
+class TestPromptSaveEndpoint:
+    """Tests for PUT /api/prompts/{path}."""
+
+    def test_save_prompt(self, client_with_prompts):
+        resp = client_with_prompts.put(
+            "/api/prompts/AGENT.md",
+            json={"content": "# Updated Agent\n\nNew content here.\n"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["path"] == "AGENT.md"
+        assert data["size"] > 0
+
+    def test_save_creates_backup(self, client_with_prompts, tmp_path):
+        # Save once to create .bak
+        client_with_prompts.put(
+            "/api/prompts/AGENT.md",
+            json={"content": "# Updated\n"},
+        )
+        bak_file = tmp_path / "digital_mate" / "AGENT.md.bak"
+        assert bak_file.exists()
+        # .bak should have original content
+        assert "Agent Definition" in bak_file.read_text(encoding="utf-8")
+
+    def test_save_persists_content(self, client_with_prompts):
+        new_content = "# Brand New Content\n\nCompletely rewritten.\n"
+        client_with_prompts.put(
+            "/api/prompts/prompts/content.md",
+            json={"content": new_content},
+        )
+        # Read back
+        resp = client_with_prompts.get("/api/prompts/prompts/content.md")
+        data = resp.json()
+        assert data["content"] == new_content
+
+    def test_save_missing_content_field(self, client_with_prompts):
+        resp = client_with_prompts.put(
+            "/api/prompts/AGENT.md",
+            json={"wrong_field": "value"},
+        )
+        assert resp.status_code == 400
+
+    def test_save_traversal_rejected(self, client_with_prompts):
+        resp = client_with_prompts.put(
+            "/api/prompts/../../../etc/passwd",
+            json={"content": "evil"},
+        )
+        # FastAPI normalizes paths, stripping .. → results in 404
+        assert resp.status_code in (400, 404)
+
+    def test_save_unknown_file_rejected(self, client_with_prompts):
+        resp = client_with_prompts.put(
+            "/api/prompts/prompts/unknown.md",
+            json={"content": "test"},
+        )
+        assert resp.status_code == 400
+
+    def test_save_updates_size_in_listing(self, client_with_prompts):
+        # Save new content
+        client_with_prompts.put(
+            "/api/prompts/AGENT.md",
+            json={"content": "# Short\n"},
+        )
+        # Check listing shows new size
+        resp = client_with_prompts.get("/api/prompts")
+        data = resp.json()
+        agent = next(p for p in data if p["path"] == "AGENT.md")
+        assert agent["size"] == len("# Short\n".encode("utf-8"))
+
 
 # ---------------------------------------------------------------------------
 # Stats Service Tests

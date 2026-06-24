@@ -17,7 +17,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import shutil
+import urllib.parse
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
 logger = logging.getLogger(__name__)
@@ -260,6 +263,122 @@ def create_app() -> FastAPI:
                 status_code=400,
                 content={"error": str(exc)},
             )
+
+    # --- Prompt Files Metadata ---
+    _PROMPT_FILES: dict[str, dict[str, str]] = {
+        "AGENT.md": {
+            "name": "Agent Personality",
+            "description": "Bot personality, voice, and communication style",
+            "group": "Core",
+        },
+        "prompts/router.md": {
+            "name": "Intent Router",
+            "description": "Classifies user messages into intent categories",
+            "group": "Agent",
+        },
+        "prompts/content.md": {
+            "name": "Content Expert",
+            "description": "Content generation expertise and frameworks",
+            "group": "Pillars",
+        },
+        "prompts/strategy.md": {
+            "name": "Strategy Expert",
+            "description": "Strategic planning and marketing frameworks",
+            "group": "Pillars",
+        },
+        "prompts/research.md": {
+            "name": "Research Expert",
+            "description": "Research methodology and data gathering",
+            "group": "Pillars",
+        },
+        "prompts/analytics.md": {
+            "name": "Analytics Expert",
+            "description": "Analytics interpretation and data insights",
+            "group": "Pillars",
+        },
+        "prompts/planner.md": {
+            "name": "Goal Planner",
+            "description": "Goal decomposition and task planning",
+            "group": "Agent",
+        },
+        "prompts/general.md": {
+            "name": "General Chat",
+            "description": "Chitchat, help responses, and general conversation",
+            "group": "Agent",
+        },
+    }
+
+    def _validate_prompt_path(rel_path: str) -> Path:
+        """Validate and resolve a prompt file path. Raises ValueError on invalid paths."""
+        if ".." in rel_path:
+            raise ValueError("Path traversal not allowed")
+        resolved = (PROJECT_ROOT / "digital_mate" / rel_path).resolve()
+        base = (PROJECT_ROOT / "digital_mate").resolve()
+        if not str(resolved).startswith(str(base)):
+            raise ValueError("Path outside allowed directory")
+        if rel_path not in _PROMPT_FILES:
+            raise ValueError(f"Unknown prompt file: {rel_path}")
+        return resolved
+
+    # --- Prompts ---
+    @app.get("/api/prompts")
+    async def list_prompts():
+        """List all prompt files with metadata."""
+        result = []
+        for rel_path, meta in _PROMPT_FILES.items():
+            abs_path = PROJECT_ROOT / "digital_mate" / rel_path
+            stat = abs_path.stat() if abs_path.exists() else None
+            result.append({
+                "path": rel_path,
+                "name": meta["name"],
+                "description": meta["description"],
+                "group": meta["group"],
+                "size": stat.st_size if stat else 0,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat() if stat else None,
+            })
+        return result
+
+    @app.get("/api/prompts/{path:path}")
+    async def read_prompt(path: str):
+        """Read a prompt file."""
+        try:
+            abs_path = _validate_prompt_path(path)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        if not abs_path.exists():
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        stat = abs_path.stat()
+        return {
+            "path": path,
+            "name": _PROMPT_FILES[path]["name"],
+            "content": abs_path.read_text(encoding="utf-8"),
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        }
+
+    @app.put("/api/prompts/{path:path}")
+    async def save_prompt(path: str, request: Request):
+        """Save a prompt file. Creates a .bak backup first."""
+        try:
+            abs_path = _validate_prompt_path(path)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={"error": str(exc)})
+        if not abs_path.exists():
+            return JSONResponse(status_code=404, content={"error": "File not found"})
+        body = await request.json()
+        content = body.get("content")
+        if content is None:
+            return JSONResponse(status_code=400, content={"error": "Missing 'content' field"})
+        # Create backup
+        bak_path = abs_path.with_suffix(abs_path.suffix + ".bak")
+        shutil.copy2(str(abs_path), str(bak_path))
+        # Write new content
+        abs_path.write_text(content, encoding="utf-8")
+        logger.info("Prompt file saved: %s (%d bytes)", path, len(content.encode("utf-8")))
+        return {
+            "success": True,
+            "path": path,
+            "size": len(content.encode("utf-8")),
+        }
 
     # --- Logs ---
     @app.get("/api/logs")

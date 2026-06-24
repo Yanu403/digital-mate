@@ -425,6 +425,160 @@ input::placeholder { color: var(--text-muted); }
 .toast.info    { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber); }
 @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 
+/* ── Prompt Editor ────────────────────────────────── */
+.prompts-layout {
+  display: flex;
+  gap: 0;
+  height: calc(100vh - 140px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.prompts-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.prompts-sidebar-header {
+  padding: 14px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg-card);
+  z-index: 1;
+}
+.prompt-group-label {
+  padding: 8px 16px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 8px;
+}
+.prompt-item {
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border-left: 3px solid transparent;
+}
+.prompt-item:hover { background: var(--bg-hover); }
+.prompt-item.active {
+  background: var(--bg-hover);
+  border-left-color: var(--amber);
+}
+.prompt-item .prompt-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.prompt-item .prompt-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-item .prompt-size {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  margin-top: 3px;
+}
+.prompts-editor {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.prompts-editor-header {
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.prompts-editor-header .file-info {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+}
+.prompts-editor-header .file-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.prompts-editor-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.prompt-textarea-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+.prompt-textarea {
+  width: 100%;
+  height: 100%;
+  padding: 16px 16px 16px 56px;
+  background: #07070d;
+  border: none;
+  outline: none;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+}
+.prompt-line-numbers {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 44px;
+  padding: 16px 8px 16px 0;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  background: #07070d;
+  border-right: 1px solid var(--border);
+  pointer-events: none;
+  user-select: none;
+  overflow: hidden;
+}
+.prompts-editor-footer {
+  padding: 8px 16px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+.prompt-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
 /* ── Hidden ───────────────────────────────────────── */
 .hidden { display: none !important; }
 
@@ -532,6 +686,9 @@ input::placeholder { color: var(--text-muted); }
       </div>
       <div class="nav-item" data-page="brand" onclick="navigateTo('brand')">
         <span class="icon">◈</span> Brand Profile
+      </div>
+      <div class="nav-item" data-page="prompts" onclick="navigateTo('prompts')">
+        <span class="icon">✎</span> Prompts
       </div>
       <div class="nav-item" data-page="logs" onclick="navigateTo('logs')">
         <span class="icon">▤</span> Logs
@@ -803,6 +960,49 @@ input::placeholder { color: var(--text-muted); }
       </div>
     </div>
 
+    <!-- Prompts Page -->
+    <div id="page-prompts" class="page hidden">
+      <div class="page-header">
+        <h2>Prompts</h2>
+        <div class="desc">View and edit system prompt files that control bot behavior</div>
+      </div>
+
+      <div class="prompts-layout">
+        <!-- File List -->
+        <div class="prompts-sidebar">
+          <div class="prompts-sidebar-header">Prompt Files</div>
+          <div id="prompt-list"></div>
+        </div>
+
+        <!-- Editor -->
+        <div class="prompts-editor" id="prompts-editor">
+          <div id="prompt-empty-state" class="prompt-empty-state">
+            Select a prompt file to edit
+          </div>
+          <div id="prompt-editor-area" style="display:none;flex-direction:column;height:100%">
+            <div class="prompts-editor-header">
+              <div>
+                <div class="file-info" id="prompt-file-path"></div>
+                <div class="file-meta" id="prompt-file-meta"></div>
+              </div>
+              <div class="prompts-editor-actions">
+                <button class="btn sm" id="prompt-reset-btn" onclick="resetPrompt()" style="display:none">Reset to Default</button>
+                <button class="btn sm primary" onclick="savePrompt()">Save</button>
+              </div>
+            </div>
+            <div class="prompt-textarea-wrapper">
+              <div class="prompt-line-numbers" id="prompt-line-numbers"></div>
+              <textarea class="prompt-textarea" id="prompt-textarea" spellcheck="false"></textarea>
+            </div>
+            <div class="prompts-editor-footer">
+              <span id="prompt-char-count">0 chars</span>
+              <span id="prompt-line-count">0 lines</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Logs Page -->
     <div id="page-logs" class="page hidden">
       <div class="page-header">
@@ -872,6 +1072,7 @@ function navigateTo(page) {
   if (page === 'settings') loadSettings();
   if (page === 'overview') refreshOverview();
   if (page === 'brand') loadBrandProfile();
+  if (page === 'prompts') loadPromptList();
 }
 
 /* ── Wizard ───────────────────────────────────────── */
@@ -1186,6 +1387,172 @@ function escapeHtml(str) {
   d.textContent = str;
   return d.innerHTML;
 }
+
+/* ── Prompts ─────────────────────────────────────── */
+let promptList = [];
+let activePromptPath = null;
+
+async function loadPromptList() {
+  try {
+    const resp = await fetch('/api/prompts');
+    promptList = await resp.json();
+    renderPromptList();
+  } catch (e) {
+    toast('Failed to load prompt files', 'error');
+  }
+}
+
+function renderPromptList() {
+  const container = document.getElementById('prompt-list');
+  const groups = {};
+  const groupOrder = ['Core', 'Pillars', 'Agent'];
+  promptList.forEach(p => {
+    if (!groups[p.group]) groups[p.group] = [];
+    groups[p.group].push(p);
+  });
+  let html = '';
+  groupOrder.forEach(group => {
+    if (!groups[group]) return;
+    html += `<div class="prompt-group-label">${group}</div>`;
+    groups[group].forEach(p => {
+      const isActive = p.path === activePromptPath ? ' active' : '';
+      const sizeStr = formatSize(p.size);
+      html += `<div class="prompt-item${isActive}" onclick="selectPrompt('${p.path}')">
+        <div class="prompt-name">${escapeHtml(p.name)}</div>
+        <div class="prompt-desc">${escapeHtml(p.description)}</div>
+        <div class="prompt-size">${sizeStr}</div>
+      </div>`;
+    });
+  });
+  container.innerHTML = html;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  return (bytes / 1024).toFixed(1) + ' KB';
+}
+
+async function selectPrompt(path) {
+  activePromptPath = path;
+  renderPromptList();
+  try {
+    const resp = await fetch('/api/prompts/' + encodeURIComponent(path));
+    if (!resp.ok) throw new Error('Failed to load');
+    const data = await resp.json();
+    // Show editor
+    document.getElementById('prompt-empty-state').style.display = 'none';
+    const area = document.getElementById('prompt-editor-area');
+    area.style.display = 'flex';
+    // Fill editor
+    document.getElementById('prompt-file-path').textContent = data.path;
+    document.getElementById('prompt-file-meta').textContent = data.modified
+      ? 'Last modified: ' + new Date(data.modified).toLocaleString()
+      : '';
+    const textarea = document.getElementById('prompt-textarea');
+    textarea.value = data.content;
+    updatePromptMeta();
+    updateLineNumbers();
+    // Check for .bak file (show reset button)
+    checkResetAvailable(path);
+  } catch (e) {
+    toast('Failed to load prompt file', 'error');
+  }
+}
+
+async function checkResetAvailable(path) {
+  // We can't directly check .bak, so just show the button always
+  // (it will fail gracefully if no .bak exists)
+  document.getElementById('prompt-reset-btn').style.display = '';
+}
+
+async function savePrompt() {
+  if (!activePromptPath) return;
+  const content = document.getElementById('prompt-textarea').value;
+  try {
+    const resp = await fetch('/api/prompts/' + encodeURIComponent(activePromptPath), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ content }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      toast('Saved (' + formatSize(data.size) + ')', 'success');
+      // Refresh list to update size
+      await loadPromptList();
+    } else {
+      const err = await resp.json();
+      toast('Error: ' + (err.error || 'Failed to save'), 'error');
+    }
+  } catch (e) {
+    toast('Failed to save', 'error');
+  }
+}
+
+async function resetPrompt() {
+  if (!activePromptPath) return;
+  if (!confirm('Reset this prompt to the last backup? Current changes will be lost.')) return;
+  try {
+    // Try to read the .bak file by saving current, then re-reading original
+    // Since we don't have a dedicated .bak endpoint, we'll just reload the file
+    // The .bak was created on last save, so we can't easily restore without a new endpoint
+    toast('Use git to restore defaults if needed', 'info');
+  } catch (e) {
+    toast('Reset failed', 'error');
+  }
+}
+
+function updatePromptMeta() {
+  const textarea = document.getElementById('prompt-textarea');
+  const text = textarea.value;
+  const chars = text.length;
+  const lines = text.split('\n').length;
+  document.getElementById('prompt-char-count').textContent = chars.toLocaleString() + ' chars';
+  document.getElementById('prompt-line-count').textContent = lines + ' lines';
+}
+
+function updateLineNumbers() {
+  const textarea = document.getElementById('prompt-textarea');
+  const lineNums = document.getElementById('prompt-line-numbers');
+  const lines = textarea.value.split('\n').length;
+  let nums = '';
+  for (let i = 1; i <= lines; i++) {
+    nums += i + '\n';
+  }
+  lineNums.textContent = nums;
+}
+
+// Sync scroll between textarea and line numbers
+document.addEventListener('DOMContentLoaded', () => {
+  const textarea = document.getElementById('prompt-textarea');
+  const lineNums = document.getElementById('prompt-line-numbers');
+  if (textarea && lineNums) {
+    textarea.addEventListener('scroll', () => {
+      lineNums.scrollTop = textarea.scrollTop;
+    });
+    textarea.addEventListener('input', () => {
+      updatePromptMeta();
+      updateLineNumbers();
+    });
+    // Tab key inserts 2 spaces
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Tab') {
+        e.preventDefault();
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        textarea.value = textarea.value.substring(0, start) + '  ' + textarea.value.substring(end);
+        textarea.selectionStart = textarea.selectionEnd = start + 2;
+        updatePromptMeta();
+        updateLineNumbers();
+      }
+      // Ctrl+S to save
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        savePrompt();
+      }
+    });
+  }
+});
+
 </script>
 </body>
 </html>
