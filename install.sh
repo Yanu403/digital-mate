@@ -81,7 +81,7 @@ else
     esac
   fi
   info "Cloning Digital Mate into $INSTALL_DIR..."
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone --depth 1 --single-branch "$REPO_URL" "$INSTALL_DIR"
   ok "Repository cloned."
 fi
 
