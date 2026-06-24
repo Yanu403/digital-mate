@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Digital Mate - One-line installer
-# Usage: curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/main/install.sh | bash
+# Usage: curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/master/install.sh | bash
 # Options: --launch (auto-start after install), INSTALL_DIR=/path (custom location)
 
 set -euo pipefail

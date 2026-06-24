@@ -220,7 +220,7 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 ### One-Line Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/master/install.sh | bash
 ```
 
 This installs Digital Mate to `~/.digital-mate/`, sets up Python venv, and creates the `.env` config file.
@@ -235,7 +235,7 @@ Opens `http://localhost:7749` — configure your Telegram token, LLM key, and br
 
 > **Or auto-launch after install:**
 > ```bash
-> curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/main/install.sh | bash -s -- --launch
+> curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/master/install.sh | bash -s -- --launch
 > ```
 
 ### Manual Install
