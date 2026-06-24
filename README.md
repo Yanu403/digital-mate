@@ -4,16 +4,20 @@
 
 # 🤖 Digital Mate
 
-### Your AI Digital Marketing Assistant
+### Stop guessing. Start marketing like you have a full team.
 
-**An intelligent Telegram bot that plans, creates, and analyzes marketing activities — from content creation to performance reporting.**
+**An AI marketing assistant in Telegram that plans, creates, and analyzes — from captions to campaign strategies to performance reports. 510 tests. Defense-in-depth security. Zero dashboard.**
+
+> *Chat with it like a marketing colleague. It does the rest.*
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-510%20Passing-brightgreen?style=for-the-badge)](#testing)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)](https://t.me/digitalmate_marketing_bot)
 
-[Features](#features) · [Demo](#demo) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Security](#security) · [Roadmap](#roadmap)
+**Tech Stack:** Python 3.11+ · python-telegram-bot · OpenAI-compatible LLM · SQLite · Notion API
+
+[Why Digital Mate?](#-why-digital-mate) · [Who is this for?](#-who-is-this-for) · [Features](#features) · [Demo](#demo) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Contributing](#-contributing) · [Roadmap](#roadmap)
 
 </div>
 
@@ -24,6 +28,36 @@
 Digital Mate is a **production-grade AI marketing assistant** built for Telegram. It understands natural language marketing requests, routes them to specialized AI pipelines, and delivers actionable outputs — captions, strategies, research reports, and analytics.
 
 **No dashboard. No learning curve. Just chat.**
+
+---
+
+## 🔥 Why Digital Mate?
+
+| Feature | ChatGPT | Generic AI Bots | **Digital Mate** |
+|---------|---------|-----------------|------------------|
+| Marketing-specific prompts | ❌ Generic | ⚠️ Basic | ✅ 4 specialized pillars |
+| Multi-step workflows | ❌ Single turn | ❌ | ✅ Automatic tool chaining |
+| Self-reflection & auto-optimization | ❌ | ❌ | ✅ Quality scoring + refinement |
+| Proactive reminders | ❌ | ❌ | ✅ Weekly digests + nudges |
+| Security hardening | ⚠️ Basic | ❌ | ✅ 510 tests, 3 guard layers |
+| Brand voice memory | ❌ | ⚠️ Limited | ✅ Per-chat brand profiles |
+| Open source | ❌ | ❌ | ✅ MIT License |
+| Telegram native | ❌ | ⚠️ Some | ✅ Built for Telegram |
+
+Most AI tools give you a blank chat box. Digital Mate gives you a **marketing team** — with memory, workflows, quality control, and security built in.
+
+---
+
+## 👋 Who is this for?
+
+- **🧑‍💻 Solo founders** — *"I need marketing content but can't afford an agency."*
+- **🏪 Small business owners** — *"I know I should post on social media but don't know what."*
+- **🧑‍🎨 Marketing freelancers** — *"I need to scale my output without sacrificing quality."*
+- **🚀 Startup teams** — *"We need a marketing strategy but our budget is $0."*
+
+If you think in marketing terms but don't have a team to execute — **Digital Mate is your team.**
+
+---
 
 ```
 You: Write me 3 Instagram captions for a new coffee shop in Jakarta
@@ -382,7 +416,6 @@ digital-mate/
 ├── tests/                    # 510 automated tests
 ├── deploy/                   # Systemd service files
 ├── docs/
-│   ├── SPEC.md               # Full technical specification
 │   ├── ARCHITECTURE.md       # Architecture deep-dive
 │   ├── notion-setup.md       # Notion database setup guide
 │   └── screenshots/          # Demo screenshots
@@ -429,7 +462,7 @@ digital-mate/
 - [x] Security guard layer
 - [x] Notion integration
 - [x] Web search integration
-- [x] 105 automated tests
+- [x] 105 automated tests (expanded to 510 in Phase 2)
 
 ### ✅ Phase 2 — Agentic Intelligence
 - [x] Tool chaining & multi-step workflows (4 built-in workflows)
@@ -490,6 +523,35 @@ ruff check digital_mate/ tests/
 
 ---
 
+## 🤝 Contributing
+
+Contributions welcome! Here's how:
+
+1. **Fork** the repo
+2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
+3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
+4. **Push** to the branch (`git push origin feature/amazing-feature`)
+5. **Open** a Pull Request
+
+### Good first issues
+- 🏷️ [`good-first-issue`](https://github.com/Yanu403/digital-mate/labels/good-first-issue) — Beginner-friendly tasks
+- 🏷️ [`help-wanted`](https://github.com/Yanu403/digital-mate/labels/help-wanted) — Features we need help with
+- 🏷️ [`documentation`](https://github.com/Yanu403/digital-mate/labels/documentation) — Docs improvements
+
+### Development setup
+
+```bash
+git clone https://github.com/Yanu403/digital-mate.git
+cd digital-mate
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install pytest pytest-asyncio pytest-cov ruff black
+pytest  # Should show 510 passing
+```
+
+---
+
 ## 📄 License
 
 MIT License — see [LICENSE](LICENSE) for details.
@@ -509,6 +571,10 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 **Built with ❤️ by [Reazer](https://github.com/Yanu403)**
 
-*If you find this useful, give it a ⭐ — it helps more than you think.*
+**⭐ Star this repo** if Digital Mate saved you time — it helps others discover the project and keeps development going.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Yanu403/digital-mate&type=Date)](https://star-history.com/#Yanu403/digital-mate&Date)
+
+[Share on Twitter](https://twitter.com/intent/tweet?text=Just%20found%20Digital%20Mate%20%E2%80%94%20an%20AI%20marketing%20assistant%20in%20Telegram%20with%20510%20tests%20and%20defense-in-depth%20security.%20Open%20source!%20https://github.com/Yanu403/digital-mate)
 
 </div>
