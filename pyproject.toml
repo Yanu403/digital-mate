@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [project.scripts]
-digital-mate = "digital_mate.__main__:main"
+digital-mate = "digital_mate.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

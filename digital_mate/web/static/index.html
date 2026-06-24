@@ -1,0 +1,1191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Digital Mate — Dashboard</title>
+<style>
+/* ── Reset & Base ─────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:        #0a0a12;
+  --bg-card:   #111118;
+  --bg-input:  #16161f;
+  --bg-hover:  #1c1c28;
+  --border:    #1e1e2a;
+  --border-focus: #f5a623;
+  --text:      #e4e4ec;
+  --text-dim:  #7a7a8e;
+  --text-muted:#4e4e5e;
+  --amber:     #f5a623;
+  --amber-dim: #f5a62340;
+  --teal:      #2dd4bf;
+  --teal-dim:  #2dd4bf30;
+  --red:       #ef4444;
+  --red-dim:   #ef444430;
+  --green:     #22c55e;
+  --green-dim: #22c55e30;
+  --font:      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono:      'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --radius:    6px;
+  --sidebar-w: 220px;
+}
+html { font-size: 14px; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+a { color: var(--amber); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Layout ───────────────────────────────────────── */
+.shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 10;
+}
+.main {
+  flex: 1;
+  margin-left: var(--sidebar-w);
+  padding: 32px 40px;
+  min-height: 100vh;
+}
+
+/* ── Sidebar ──────────────────────────────────────── */
+.sidebar-brand {
+  padding: 20px 16px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-brand h1 {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.sidebar-brand .sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.sidebar-nav { padding: 12px 8px; flex: 1; }
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+.nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-item.active {
+  background: var(--amber-dim);
+  color: var(--amber);
+}
+.nav-item .icon { font-size: 15px; width: 20px; text-align: center; }
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Page Header ──────────────────────────────────── */
+.page-header {
+  margin-bottom: 28px;
+}
+.page-header h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.page-header .desc {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+/* ── Cards ────────────────────────────────────────── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Stat Cards ───────────────────────────────────── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  font-family: var(--mono);
+}
+.stat-value.amber { color: var(--amber); }
+.stat-value.teal  { color: var(--teal); }
+
+/* ── Status Badge ─────────────────────────────────── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+.status-badge.running {
+  background: var(--green-dim);
+  color: var(--green);
+}
+.status-badge.stopped {
+  background: var(--red-dim);
+  color: var(--red);
+}
+.status-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-badge.running .status-dot { background: var(--green); }
+.status-badge.stopped .status-dot { background: var(--red); }
+
+/* ── Toggle Button ────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.btn:hover { border-color: var(--text-dim); background: var(--bg-hover); }
+.btn.primary {
+  background: var(--amber);
+  color: #0a0a12;
+  border-color: var(--amber);
+  font-weight: 600;
+}
+.btn.primary:hover { opacity: 0.9; }
+.btn.danger {
+  background: var(--red-dim);
+  color: var(--red);
+  border-color: var(--red);
+}
+.btn.sm { padding: 4px 12px; font-size: 12px; }
+
+/* ── Forms ────────────────────────────────────────── */
+.form-group { margin-bottom: 16px; }
+.form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+.form-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+input[type="text"], input[type="password"], input[type="number"],
+textarea, select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  transition: border-color 0.15s;
+  outline: none;
+}
+input:focus, textarea:focus, select:focus {
+  border-color: var(--border-focus);
+}
+textarea { resize: vertical; min-height: 80px; font-family: var(--font); }
+select { cursor: pointer; }
+input::placeholder { color: var(--text-muted); }
+
+/* ── Collapsible Sections ─────────────────────────── */
+.section {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.section-header:hover { background: var(--bg-hover); }
+.section-header .arrow {
+  transition: transform 0.2s;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.section.open .section-header .arrow { transform: rotate(90deg); }
+.section-body {
+  padding: 16px;
+  display: none;
+  border-top: 1px solid var(--border);
+}
+.section.open .section-body { display: block; }
+
+/* ── Table ────────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data-table th {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.data-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.data-table tr:last-child td { border-bottom: none; }
+.data-table tr:hover td { background: var(--bg-hover); }
+.mono { font-family: var(--mono); }
+
+/* ── Log Viewer ───────────────────────────────────── */
+.log-viewer {
+  background: #07070d;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 16px;
+  height: 500px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+.log-line { white-space: pre-wrap; word-break: break-all; }
+.log-line .ts { color: var(--text-muted); }
+.log-line .level-INFO { color: var(--teal); }
+.log-line .level-WARNING { color: var(--amber); }
+.log-line .level-ERROR { color: var(--red); }
+.log-line .level-DEBUG { color: var(--text-muted); }
+
+/* ── Wizard ───────────────────────────────────────── */
+.wizard-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wizard-box {
+  width: 520px;
+  max-width: 90vw;
+}
+.wizard-steps {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 32px;
+}
+.wizard-step-dot {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.3s;
+}
+.wizard-step-dot.done { background: var(--amber); }
+.wizard-step-dot.current { background: var(--amber); }
+.wizard-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.wizard-subtitle {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 24px;
+}
+.wizard-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 28px;
+}
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.preset-btn {
+  padding: 10px 14px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s;
+}
+.preset-btn:hover { border-color: var(--amber); }
+.preset-btn .name { font-weight: 600; font-size: 13px; }
+.preset-btn .detail { font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+
+/* ── Toast ────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  animation: toast-in 0.3s ease;
+  max-width: 340px;
+}
+.toast.success { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+.toast.error   { background: var(--red-dim);   color: var(--red);   border: 1px solid var(--red); }
+.toast.info    { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber); }
+@keyframes toast-in { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+/* ── Hidden ───────────────────────────────────────── */
+.hidden { display: none !important; }
+
+/* ── Responsive ───────────────────────────────────── */
+@media (max-width: 768px) {
+  .sidebar { display: none; }
+  .main { margin-left: 0; padding: 16px; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+
+<!-- Toast Container -->
+<div id="toasts" class="toast-container"></div>
+
+<!-- Wizard Overlay -->
+<div id="wizard" class="wizard-overlay hidden">
+  <div class="wizard-box">
+    <div class="wizard-steps">
+      <div class="wizard-step-dot" id="wiz-dot-0"></div>
+      <div class="wizard-step-dot" id="wiz-dot-1"></div>
+      <div class="wizard-step-dot" id="wiz-dot-2"></div>
+    </div>
+
+    <!-- Step 0: Telegram Token -->
+    <div id="wiz-step-0" class="wizard-page">
+      <div class="wizard-title">Telegram Bot Token</div>
+      <div class="wizard-subtitle">
+        Get a token from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram.
+        Send <code>/newbot</code> and copy the token here.
+      </div>
+      <div class="form-group">
+        <label class="form-label">Bot Token</label>
+        <input type="text" id="wiz-token" placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11">
+      </div>
+    </div>
+
+    <!-- Step 1: LLM Configuration -->
+    <div id="wiz-step-1" class="wizard-page hidden">
+      <div class="wizard-title">LLM Configuration</div>
+      <div class="wizard-subtitle">Choose a provider or configure a custom endpoint.</div>
+      <div class="preset-grid">
+        <button class="preset-btn" onclick="applyPreset('openai')">
+          <div class="name">OpenAI</div>
+          <div class="detail">api.openai.com — GPT-4o</div>
+        </button>
+        <button class="preset-btn" onclick="applyPreset('groq')">
+          <div class="name">Groq</div>
+          <div class="detail">api.groq.com — Llama 3</div>
+        </button>
+        <button class="preset-btn" onclick="applyPreset('together')">
+          <div class="name">Together AI</div>
+          <div class="detail">api.together.xyz — Mixtral</div>
+        </button>
+        <button class="preset-btn" onclick="applyPreset('ollama')">
+          <div class="name">Ollama (Local)</div>
+          <div class="detail">localhost:11434 — Local models</div>
+        </button>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Base URL</label>
+        <input type="text" id="wiz-base-url" placeholder="https://api.openai.com/v1">
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key</label>
+        <input type="password" id="wiz-api-key" placeholder="sk-...">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Model</label>
+        <input type="text" id="wiz-model" placeholder="gpt-4o">
+      </div>
+    </div>
+
+    <!-- Step 2: Review & Launch -->
+    <div id="wiz-step-2" class="wizard-page hidden">
+      <div class="wizard-title">Ready to Launch</div>
+      <div class="wizard-subtitle">Review your configuration and start the bot.</div>
+      <div class="card" style="margin-bottom:16px">
+        <div id="wiz-review" class="mono" style="font-size:12px;line-height:2;color:var(--text-dim)"></div>
+      </div>
+    </div>
+
+    <div class="wizard-actions">
+      <button class="btn" id="wiz-back" onclick="wizardBack()">Back</button>
+      <button class="btn primary" id="wiz-next" onclick="wizardNext()">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- App Shell -->
+<div class="shell" id="app-shell">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <h1>Digital Mate</h1>
+      <div class="sub">Dashboard</div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-item active" data-page="overview" onclick="navigateTo('overview')">
+        <span class="icon">◉</span> Overview
+      </div>
+      <div class="nav-item" data-page="settings" onclick="navigateTo('settings')">
+        <span class="icon">⚙</span> Settings
+      </div>
+      <div class="nav-item" data-page="brand" onclick="navigateTo('brand')">
+        <span class="icon">◈</span> Brand Profile
+      </div>
+      <div class="nav-item" data-page="logs" onclick="navigateTo('logs')">
+        <span class="icon">▤</span> Logs
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      Digital Mate v0.1.0
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main">
+    <!-- Overview Page -->
+    <div id="page-overview" class="page">
+      <div class="page-header">
+        <h2>Overview</h2>
+        <div class="desc">Bot status and key metrics</div>
+      </div>
+
+      <!-- Status Card -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:12px">
+            <span class="card-title">Bot Status</span>
+            <span id="status-badge" class="status-badge stopped">
+              <span class="status-dot"></span> <span id="status-text">Stopped</span>
+            </span>
+          </div>
+          <button class="btn" id="toggle-btn" onclick="toggleBot()">
+            <span id="toggle-label">Start</span>
+          </button>
+        </div>
+        <div id="uptime-info" class="mono" style="font-size:12px;color:var(--text-muted)"></div>
+      </div>
+
+      <!-- Stats Grid -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total Messages</div>
+          <div class="stat-value amber" id="stat-messages">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Active Users (7d)</div>
+          <div class="stat-value teal" id="stat-users">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Plans Created</div>
+          <div class="stat-value" id="stat-plans">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Feedback Score</div>
+          <div class="stat-value" id="stat-feedback">—</div>
+        </div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Recent Activity</span>
+        </div>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Chat ID</th>
+              <th>Message</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="activity-table">
+            <tr><td colspan="3" style="color:var(--text-muted);text-align:center">No activity yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Settings Page -->
+    <div id="page-settings" class="page hidden">
+      <div class="page-header">
+        <h2>Settings</h2>
+        <div class="desc">Configure your bot. Changes are saved to the .env file.</div>
+      </div>
+
+      <!-- Telegram Section -->
+      <div class="section open">
+        <div class="section-header" onclick="toggleSection(this)">
+          Telegram <span class="arrow">▸</span>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label class="form-label">Bot Token</label>
+            <input type="password" id="set-TELEGRAM_BOT_TOKEN" placeholder="123456:ABC-DEF...">
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM Section -->
+      <div class="section open">
+        <div class="section-header" onclick="toggleSection(this)">
+          LLM <span class="arrow">▸</span>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label class="form-label">Base URL</label>
+            <input type="text" id="set-LLM_BASE_URL" placeholder="https://api.openai.com/v1">
+          </div>
+          <div class="form-group">
+            <label class="form-label">API Key</label>
+            <input type="password" id="set-LLM_API_KEY" placeholder="sk-...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Model</label>
+            <input type="text" id="set-LLM_MODEL" placeholder="gpt-4o">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Router Model (optional)</label>
+            <input type="text" id="set-LLM_ROUTER_MODEL" placeholder="Leave empty to use main model">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Timeout (seconds)</label>
+            <input type="number" id="set-LLM_TIMEOUT" placeholder="120" min="1">
+          </div>
+        </div>
+      </div>
+
+      <!-- Search Section -->
+      <div class="section">
+        <div class="section-header" onclick="toggleSection(this)">
+          Search <span class="arrow">▸</span>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label class="form-label">Tavily API Key (optional)</label>
+            <input type="password" id="set-TAVILY_API_KEY" placeholder="Leave empty for DuckDuckGo fallback">
+            <div class="form-hint">DuckDuckGo is used by default. Add Tavily key for enhanced search.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notion Section -->
+      <div class="section">
+        <div class="section-header" onclick="toggleSection(this)">
+          Notion <span class="arrow">▸</span>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label class="form-label">API Key</label>
+            <input type="password" id="set-NOTION_API_KEY" placeholder="secret_...">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Content Calendar DB ID</label>
+            <input type="text" id="set-NOTION_CONTENT_CALENDAR_DB" placeholder="Database ID">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Campaign Tracker DB ID</label>
+            <input type="text" id="set-NOTION_CAMPAIGN_TRACKER_DB" placeholder="Database ID">
+          </div>
+        </div>
+      </div>
+
+      <!-- Bot Behavior Section -->
+      <div class="section">
+        <div class="section-header" onclick="toggleSection(this)">
+          Bot Behavior <span class="arrow">▸</span>
+        </div>
+        <div class="section-body">
+          <div class="form-group">
+            <label class="form-label">Language</label>
+            <select id="set-BOT_LANGUAGE">
+              <option value="bilingual">Bilingual (auto-detect)</option>
+              <option value="en">English</option>
+              <option value="id">Bahasa Indonesia</option>
+              <option value="es">Spanish</option>
+              <option value="zh">Chinese</option>
+              <option value="ja">Japanese</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Max Conversation Turns</label>
+            <input type="number" id="set-MAX_CONVERSATION_TURNS" placeholder="10" min="1" max="50">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Bot Name</label>
+            <input type="text" id="set-BOT_NAME" placeholder="Digital Mate">
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:16px">
+        <button class="btn primary" onclick="saveSettings()">Save Settings</button>
+      </div>
+    </div>
+
+    <!-- Brand Profile Page -->
+    <div id="page-brand" class="page hidden">
+      <div class="page-header">
+        <h2>Brand Profile</h2>
+        <div class="desc">Define your brand identity for personalized AI responses.</div>
+      </div>
+
+      <div class="card" style="margin-bottom:20px">
+        <div class="form-group">
+          <label class="form-label">Chat ID</label>
+          <input type="number" id="brand-chat-id" placeholder="Telegram Chat ID (e.g. 123456789)">
+          <div class="form-hint">Use 0 for global/default profile</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Brand Name</label>
+          <input type="text" id="brand-name" placeholder="My Brand">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Industry</label>
+          <input type="text" id="brand-industry" placeholder="e.g. Food & Beverage, SaaS, Fashion">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Target Audience</label>
+          <textarea id="brand-audience" placeholder="Describe your ideal customer..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Tone of Voice</label>
+          <input type="text" id="brand-tone" placeholder="e.g. Professional, Friendly, Playful">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Products / Services</label>
+          <textarea id="brand-products" placeholder="List your key products or services..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Hashtags</label>
+          <input type="text" id="brand-hashtags" placeholder="#brand, #industry, #niche">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Competitors</label>
+          <input type="text" id="brand-competitors" placeholder="Competitor 1, Competitor 2">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Platforms</label>
+          <input type="text" id="brand-platform" placeholder="instagram,tiktok,twitter">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Budget Range</label>
+          <select id="brand-budget">
+            <option value="">Not specified</option>
+            <option value="micro">Micro (&lt;$500/mo)</option>
+            <option value="small">Small ($500-2k/mo)</option>
+            <option value="medium">Medium ($2k-10k/mo)</option>
+            <option value="large">Large ($10k-50k/mo)</option>
+            <option value="enterprise">Enterprise ($50k+/mo)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Business Stage</label>
+          <select id="brand-stage">
+            <option value="">Not specified</option>
+            <option value="idea">Idea</option>
+            <option value="launch">Launch</option>
+            <option value="growth">Growth</option>
+            <option value="scale">Scale</option>
+            <option value="mature">Mature</option>
+          </select>
+        </div>
+        <button class="btn primary" onclick="saveBrand()">Save Brand Profile</button>
+      </div>
+
+      <!-- Preview -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Brand Context Preview</span>
+        </div>
+        <div id="brand-preview" class="mono" style="font-size:12px;line-height:1.8;color:var(--text-dim);white-space:pre-wrap">Fill in the fields above to preview the brand context that gets injected into AI prompts.</div>
+      </div>
+    </div>
+
+    <!-- Logs Page -->
+    <div id="page-logs" class="page hidden">
+      <div class="page-header">
+        <h2>Logs</h2>
+        <div class="desc">Real-time bot log stream</div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <button class="btn sm" onclick="filterLogs('all')" id="log-filter-all">All</button>
+        <button class="btn sm" onclick="filterLogs('DEBUG')" id="log-filter-DEBUG">Debug</button>
+        <button class="btn sm" onclick="filterLogs('INFO')" id="log-filter-INFO">Info</button>
+        <button class="btn sm" onclick="filterLogs('WARNING')" id="log-filter-WARNING">Warn</button>
+        <button class="btn sm" onclick="filterLogs('ERROR')" id="log-filter-ERROR">Error</button>
+        <div style="flex:1"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-dim);cursor:pointer">
+          <input type="checkbox" id="log-autoscroll" checked> Auto-scroll
+        </label>
+      </div>
+
+      <div class="log-viewer" id="log-viewer">
+        <div class="log-line" style="color:var(--text-muted)">Waiting for logs...</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+/* ── State ────────────────────────────────────────── */
+let currentPage = 'overview';
+let wizardStep = 0;
+let wizardData = {};
+let wsConnection = null;
+let logFilter = 'all';
+let settingsDirty = {};
+
+/* ── Init ─────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', async () => {
+  const resp = await fetch('/api/settings');
+  const settings = await resp.json();
+  if (!settings._exists || !settings.TELEGRAM_BOT_TOKEN) {
+    showWizard();
+  } else {
+    hideWizard();
+    loadDashboard();
+  }
+});
+
+/* ── Toast ────────────────────────────────────────── */
+function toast(msg, type = 'info') {
+  const c = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+/* ── Navigation ───────────────────────────────────── */
+function navigateTo(page) {
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.remove('hidden');
+  document.querySelector(`.nav-item[data-page="${page}"]`).classList.add('active');
+  currentPage = page;
+
+  if (page === 'logs') connectWebSocket();
+  if (page === 'settings') loadSettings();
+  if (page === 'overview') refreshOverview();
+  if (page === 'brand') loadBrandProfile();
+}
+
+/* ── Wizard ───────────────────────────────────────── */
+function showWizard() {
+  document.getElementById('wizard').classList.remove('hidden');
+  document.getElementById('app-shell').classList.add('hidden');
+  wizardStep = 0;
+  updateWizardUI();
+}
+function hideWizard() {
+  document.getElementById('wizard').classList.add('hidden');
+  document.getElementById('app-shell').classList.remove('hidden');
+}
+function updateWizardUI() {
+  for (let i = 0; i < 3; i++) {
+    document.getElementById('wiz-step-' + i).classList.toggle('hidden', i !== wizardStep);
+    const dot = document.getElementById('wiz-dot-' + i);
+    dot.classList.toggle('done', i < wizardStep);
+    dot.classList.toggle('current', i === wizardStep);
+  }
+  document.getElementById('wiz-back').classList.toggle('hidden', wizardStep === 0);
+  document.getElementById('wiz-next').textContent = wizardStep === 2 ? 'Launch Bot' : 'Continue';
+}
+function wizardBack() {
+  if (wizardStep > 0) { wizardStep--; updateWizardUI(); }
+}
+async function wizardNext() {
+  if (wizardStep === 0) {
+    const token = document.getElementById('wiz-token').value.trim();
+    if (!token) { toast('Please enter a bot token', 'error'); return; }
+    wizardData.TELEGRAM_BOT_TOKEN = token;
+    wizardStep++;
+  } else if (wizardStep === 1) {
+    const baseUrl = document.getElementById('wiz-base-url').value.trim();
+    const apiKey = document.getElementById('wiz-api-key').value.trim();
+    const model = document.getElementById('wiz-model').value.trim();
+    if (!apiKey) { toast('Please enter an API key', 'error'); return; }
+    wizardData.LLM_BASE_URL = baseUrl || 'https://api.openai.com/v1';
+    wizardData.LLM_API_KEY = apiKey;
+    wizardData.LLM_MODEL = model || 'gpt-4o';
+    // Show review
+    document.getElementById('wiz-review').innerHTML =
+      `<div>TELEGRAM_BOT_TOKEN: ${wizardData.TELEGRAM_BOT_TOKEN.slice(0,8)}…</div>` +
+      `<div>LLM_BASE_URL: ${wizardData.LLM_BASE_URL}</div>` +
+      `<div>LLM_API_KEY: ${wizardData.LLM_API_KEY.slice(0,4)}…</div>` +
+      `<div>LLM_MODEL: ${wizardData.LLM_MODEL}</div>`;
+    wizardStep++;
+  } else if (wizardStep === 2) {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(wizardData),
+    });
+    if (resp.ok) {
+      toast('Settings saved! Bot is ready.', 'success');
+      hideWizard();
+      loadDashboard();
+    } else {
+      const err = await resp.json();
+      toast('Error: ' + (err.error || 'Failed to save'), 'error');
+      return;
+    }
+  }
+  updateWizardUI();
+}
+
+/* ── Presets ──────────────────────────────────────── */
+const PRESETS = {
+  openai:   { base: 'https://api.openai.com/v1', model: 'gpt-4o' },
+  groq:     { base: 'https://api.groq.com/openai/v1', model: 'llama3-70b-8192' },
+  together: { base: 'https://api.together.xyz/v1', model: 'mistralai/Mixtral-8x7B-Instruct-v0.1' },
+  ollama:   { base: 'http://localhost:11434/v1', model: 'llama3' },
+};
+function applyPreset(name) {
+  const p = PRESETS[name];
+  document.getElementById('wiz-base-url').value = p.base;
+  document.getElementById('wiz-model').value = p.model;
+  toast(name + ' preset applied', 'info');
+}
+
+/* ── Dashboard Load ───────────────────────────────── */
+async function loadDashboard() {
+  await refreshOverview();
+  // Periodic status refresh
+  setInterval(refreshStatus, 5000);
+}
+
+async function refreshOverview() {
+  await Promise.all([refreshStatus(), refreshStats()]);
+}
+
+async function refreshStatus() {
+  try {
+    const resp = await fetch('/api/status');
+    const data = await resp.json();
+    const badge = document.getElementById('status-badge');
+    const text = document.getElementById('status-text');
+    const btn = document.getElementById('toggle-btn');
+    const label = document.getElementById('toggle-label');
+    const uptime = document.getElementById('uptime-info');
+
+    if (data.status === 'running') {
+      badge.className = 'status-badge running';
+      text.textContent = 'Running';
+      label.textContent = 'Stop';
+      btn.className = 'btn danger';
+      uptime.textContent = data.uptime_seconds
+        ? `PID ${data.pid} · Uptime ${formatDuration(data.uptime_seconds)}`
+        : `PID ${data.pid}`;
+    } else {
+      badge.className = 'status-badge stopped';
+      text.textContent = 'Stopped';
+      label.textContent = 'Start';
+      btn.className = 'btn';
+      uptime.textContent = '';
+    }
+  } catch (e) { /* offline */ }
+}
+
+async function refreshStats() {
+  try {
+    const resp = await fetch('/api/stats');
+    const data = await resp.json();
+    document.getElementById('stat-messages').textContent = formatNumber(data.total_messages);
+    document.getElementById('stat-users').textContent = formatNumber(data.active_users);
+    document.getElementById('stat-plans').textContent = formatNumber(data.plans_created);
+    document.getElementById('stat-feedback').textContent = data.feedback_score > 0
+      ? data.feedback_score + '%' : '—';
+
+    const tbody = document.getElementById('activity-table');
+    if (data.recent_activity && data.recent_activity.length > 0) {
+      tbody.innerHTML = data.recent_activity.map(a =>
+        `<tr>
+          <td class="mono">${a.chat_id}</td>
+          <td>${escapeHtml(a.preview || '')}</td>
+          <td class="mono" style="color:var(--text-muted)">${a.timestamp || ''}</td>
+        </tr>`
+      ).join('');
+    }
+  } catch (e) { /* offline */ }
+}
+
+/* ── Bot Control ──────────────────────────────────── */
+async function toggleBot() {
+  const resp = await fetch('/api/status');
+  const data = await resp.json();
+  if (data.status === 'running') {
+    await fetch('/api/bot/stop', { method: 'POST' });
+    toast('Bot stopped', 'info');
+  } else {
+    const r = await fetch('/api/bot/start', { method: 'POST' });
+    const d = await r.json();
+    if (d.status === 'started') toast('Bot started (PID ' + d.pid + ')', 'success');
+    else if (d.status === 'already_running') toast('Bot is already running', 'info');
+    else toast('Failed to start bot', 'error');
+  }
+  setTimeout(refreshStatus, 1000);
+}
+
+/* ── Settings ─────────────────────────────────────── */
+async function loadSettings() {
+  try {
+    const resp = await fetch('/api/settings');
+    const data = await resp.json();
+    const fields = [
+      'TELEGRAM_BOT_TOKEN', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
+      'LLM_ROUTER_MODEL', 'LLM_TIMEOUT', 'TAVILY_API_KEY',
+      'NOTION_API_KEY', 'NOTION_CONTENT_CALENDAR_DB', 'NOTION_CAMPAIGN_TRACKER_DB',
+      'BOT_LANGUAGE', 'MAX_CONVERSATION_TURNS', 'BOT_NAME',
+    ];
+    fields.forEach(f => {
+      const el = document.getElementById('set-' + f);
+      if (el && data[f] !== undefined) el.value = data[f];
+    });
+  } catch (e) { toast('Failed to load settings', 'error'); }
+}
+
+async function saveSettings() {
+  const fields = [
+    'TELEGRAM_BOT_TOKEN', 'LLM_BASE_URL', 'LLM_API_KEY', 'LLM_MODEL',
+    'LLM_ROUTER_MODEL', 'LLM_TIMEOUT', 'TAVILY_API_KEY',
+    'NOTION_API_KEY', 'NOTION_CONTENT_CALENDAR_DB', 'NOTION_CAMPAIGN_TRACKER_DB',
+    'BOT_LANGUAGE', 'MAX_CONVERSATION_TURNS', 'BOT_NAME',
+  ];
+  const data = {};
+  fields.forEach(f => {
+    const el = document.getElementById('set-' + f);
+    if (el) data[f] = el.value;
+  });
+  const resp = await fetch('/api/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  });
+  if (resp.ok) toast('Settings saved', 'success');
+  else toast('Failed to save settings', 'error');
+}
+
+/* ── Brand Profile ────────────────────────────────── */
+async function loadBrandProfile() {
+  // Update preview on input
+  const fields = ['chat-id','name','industry','audience','tone','products','hashtags','competitors','platform','budget','stage'];
+  fields.forEach(f => {
+    const el = document.getElementById('brand-' + f);
+    if (el) el.addEventListener('input', updateBrandPreview);
+  });
+}
+
+function updateBrandPreview() {
+  const v = (id) => document.getElementById('brand-' + id)?.value || '';
+  const lines = [];
+  if (v('name')) lines.push(`Brand: ${v('name')}`);
+  if (v('industry')) lines.push(`Industry: ${v('industry')}`);
+  if (v('audience')) lines.push(`Audience: ${v('audience')}`);
+  if (v('tone')) lines.push(`Tone: ${v('tone')}`);
+  if (v('products')) lines.push(`Products: ${v('products')}`);
+  if (v('hashtags')) lines.push(`Hashtags: ${v('hashtags')}`);
+  if (v('competitors')) lines.push(`Competitors: ${v('competitors')}`);
+  if (v('platform')) lines.push(`Platforms: ${v('platform')}`);
+  if (v('budget')) lines.push(`Budget: ${v('budget')}`);
+  if (v('stage')) lines.push(`Stage: ${v('stage')}`);
+  document.getElementById('brand-preview').textContent = lines.join('\n') || 'Fill in the fields above to preview...';
+}
+
+async function saveBrand() {
+  const data = {
+    chat_id: parseInt(document.getElementById('brand-chat-id').value) || 0,
+    name: document.getElementById('brand-name').value,
+    industry: document.getElementById('brand-industry').value,
+    audience: document.getElementById('brand-audience').value,
+    tone: document.getElementById('brand-tone').value,
+    products: document.getElementById('brand-products').value,
+    hashtags: document.getElementById('brand-hashtags').value,
+    competitors: document.getElementById('brand-competitors').value,
+    platform_preference: document.getElementById('brand-platform').value,
+    budget_range: document.getElementById('brand-budget').value,
+    business_stage: document.getElementById('brand-stage').value,
+  };
+  if (!data.name) { toast('Brand name is required', 'error'); return; }
+  const resp = await fetch('/api/brand', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data),
+  });
+  if (resp.ok) toast('Brand profile saved', 'success');
+  else {
+    const err = await resp.json();
+    toast('Error: ' + (err.error || 'Failed to save'), 'error');
+  }
+}
+
+/* ── Logs ─────────────────────────────────────────── */
+function connectWebSocket() {
+  if (wsConnection) return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  wsConnection = new WebSocket(`${proto}//${location.host}/ws`);
+  wsConnection.onmessage = (e) => {
+    try {
+      const entry = JSON.parse(e.data);
+      appendLog(entry);
+    } catch {}
+  };
+  wsConnection.onclose = () => { wsConnection = null; };
+  wsConnection.onerror = () => { wsConnection = null; };
+}
+
+function appendLog(entry) {
+  if (logFilter !== 'all' && entry.level !== logFilter) return;
+  const viewer = document.getElementById('log-viewer');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const ts = entry.timestamp ? entry.timestamp.replace('T', ' ').replace('Z', '') : '';
+  line.innerHTML = `<span class="ts">${ts}</span> <span class="level-${entry.level}">[${entry.level}]</span> ${escapeHtml(entry.message)}`;
+  // Remove placeholder
+  const placeholder = viewer.querySelector('.log-line[style]');
+  if (placeholder && placeholder.textContent.includes('Waiting')) placeholder.remove();
+  viewer.appendChild(line);
+  // Trim old lines
+  while (viewer.children.length > 500) viewer.removeChild(viewer.firstChild);
+  // Auto-scroll
+  if (document.getElementById('log-autoscroll').checked) {
+    viewer.scrollTop = viewer.scrollHeight;
+  }
+}
+
+function filterLogs(level) {
+  logFilter = level;
+  document.querySelectorAll('[id^="log-filter-"]').forEach(b => b.classList.remove('primary'));
+  document.getElementById('log-filter-' + level)?.classList.add('primary');
+}
+
+/* ── Section Toggle ───────────────────────────────── */
+function toggleSection(header) {
+  header.closest('.section').classList.toggle('open');
+}
+
+/* ── Helpers ──────────────────────────────────────── */
+function formatNumber(n) {
+  if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n/1000).toFixed(1) + 'K';
+  return String(n);
+}
+function formatDuration(s) {
+  if (s < 60) return Math.round(s) + 's';
+  if (s < 3600) return Math.round(s/60) + 'm';
+  const h = Math.floor(s/3600);
+  const m = Math.round((s%3600)/60);
+  return h + 'h ' + m + 'm';
+}
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
