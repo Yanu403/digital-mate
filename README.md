@@ -217,12 +217,28 @@ Mate: 🚀 3 Caption Variations — Coffee Shop Launch
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Python 3.11+
-- Telegram Bot Token ([@BotFather](https://t.me/BotFather))
-- OpenAI-compatible API key
+### One-Line Install
 
-### Installation
+```bash
+curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/main/install.sh | bash
+```
+
+This installs Digital Mate to `~/.digital-mate/`, sets up Python venv, and creates the `.env` config file.
+
+Then start the dashboard:
+
+```bash
+~/.digital-mate/bin/digital-mate serve
+```
+
+Opens `http://localhost:7749` — configure your Telegram token, LLM key, and brand profile from the web UI. No terminal editing needed.
+
+> **Or auto-launch after install:**
+> ```bash
+> curl -sSL https://raw.githubusercontent.com/Yanu403/digital-mate/main/install.sh | bash -s -- --launch
+> ```
+
+### Manual Install
 
 ```bash
 git clone https://github.com/Yanu403/digital-mate.git
