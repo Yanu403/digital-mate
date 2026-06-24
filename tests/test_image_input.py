@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import base64
+import json
 import io
 import os
 import tempfile
@@ -20,7 +21,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from openai import APIError, APITimeoutError
+import httpx
 
 from digital_mate.llm.client import LLMClient, LLMError
 from digital_mate.bot import DigitalMateBot, IMAGE_ANALYSIS_SYSTEM_PROMPT
@@ -36,49 +37,46 @@ from digital_mate.pillars.base import BasePillar
 # ---------------------------------------------------------------------------
 
 
-def _make_response(content: str) -> MagicMock:
-    """Build a mock OpenAI ChatCompletion response with given content."""
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content=content))]
+def _make_httpx_response(content: str) -> MagicMock:
+    """Build a mock httpx.Response returning the given content."""
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.json.return_value = {
+        "choices": [{"message": {"content": content}}]
+    }
+    resp.raise_for_status = MagicMock()
     return resp
 
 
-def _make_stream_response(chunks: list[str]) -> "list[MagicMock]":
-    """Build a list of mock streaming chunks."""
-    stream_chunks = []
+def _make_stream_lines(chunks: list[str]) -> "list[str]":
+    """Build SSE-formatted lines from text chunks."""
+    lines = []
     for text in chunks:
-        ch = MagicMock()
-        ch.choices = [MagicMock(delta=MagicMock(content=text))]
-        stream_chunks.append(ch)
-    # Final chunk with no content (usage chunk)
-    final = MagicMock()
-    final.choices = []
-    stream_chunks.append(final)
-    return stream_chunks
+        chunk = {"choices": [{"delta": {"content": text}}]}
+        lines.append(f"data: {json.dumps(chunk)}")
+    lines.append("data: [DONE]")
+    return lines
 
 
-class _MockAsyncStream:
-    """Minimal async-iterable stand-in for the OpenAI stream object.
+class _MockStreamResponse:
+    """Mock for httpx stream context manager yielding SSE lines."""
 
-    ``chat_with_image_stream()`` iterates ``async for chunk in stream``;
-    this yields the provided chunks then stops.
-    """
+    def __init__(self, lines: list[str]) -> None:
+        self._lines = lines
+        self.status_code = 200
 
-    def __init__(self, chunks: list) -> None:
-        self._chunks = list(chunks)
+    def raise_for_status(self) -> None:
+        pass
 
-    def __aiter__(self) -> "_MockAsyncStream":
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+    async def __aenter__(self):
         return self
 
-    async def __anext__(self) -> Any:
-        if not self._chunks:
-            raise StopAsyncIteration
-        item = self._chunks.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-
+    async def __aexit__(self, *args):
+        pass
 def _make_photo_update(
     chat_id: int = 123456789,
     caption: str = "",
@@ -251,8 +249,8 @@ class TestChatWithImage:
     @pytest.mark.asyncio
     async def test_returns_response_text(self, llm_client: LLMClient) -> None:
         """chat_with_image returns the LLM response text."""
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_make_response("This image shows a dashboard.")
+        llm_client._client.post = AsyncMock(
+            return_value=_make_httpx_response("This image shows a dashboard.")
         )
         messages = [{"role": "user", "content": "Analyze this"}]
         result = await llm_client.chat_with_image(messages, "base64data")
@@ -262,8 +260,8 @@ class TestChatWithImage:
     @pytest.mark.asyncio
     async def test_passes_vision_messages_to_api(self, llm_client: LLMClient) -> None:
         """The messages sent to the API contain image_url content."""
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_make_response("response")
+        llm_client._client.post = AsyncMock(
+            return_value=_make_httpx_response("response")
         )
         messages = [
             {"role": "system", "content": "sys"},
@@ -271,8 +269,8 @@ class TestChatWithImage:
         ]
         await llm_client.chat_with_image(messages, "imgbase64")
 
-        call_args = llm_client._client.chat.completions.create.call_args
-        sent_messages = call_args.kwargs["messages"]
+        call_args = llm_client._client.post.call_args
+        sent_messages = (call_args.kwargs.get("json") or call_args[1].get("json"))["messages"]
         # Last message should have content array with image_url
         last_msg = sent_messages[-1]
         assert isinstance(last_msg["content"], list)
@@ -281,8 +279,8 @@ class TestChatWithImage:
     @pytest.mark.asyncio
     async def test_strips_whitespace(self, llm_client: LLMClient) -> None:
         """Response is stripped of whitespace."""
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_make_response("  Padded response  ")
+        llm_client._client.post = AsyncMock(
+            return_value=_make_httpx_response("  Padded response  ")
         )
         result = await llm_client.chat_with_image(
             [{"role": "user", "content": "test"}], "data"
@@ -292,8 +290,8 @@ class TestChatWithImage:
     @pytest.mark.asyncio
     async def test_raises_on_empty_response(self, llm_client: LLMClient) -> None:
         """LLMError raised on empty response."""
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_make_response("   ")
+        llm_client._client.post = AsyncMock(
+            return_value=_make_httpx_response("   ")
         )
         with pytest.raises(LLMError, match="empty response"):
             await llm_client.chat_with_image(
@@ -302,11 +300,11 @@ class TestChatWithImage:
 
     @pytest.mark.asyncio
     async def test_retries_on_timeout(self, llm_client: LLMClient) -> None:
-        """chat_with_image retries on APITimeoutError."""
-        llm_client._client.chat.completions.create = AsyncMock(
+        """chat_with_image retries on httpx.ReadTimeout."""
+        llm_client._client.post = AsyncMock(
             side_effect=[
-                APITimeoutError(request=MagicMock()),
-                _make_response("recovered"),
+                httpx.ReadTimeout("timeout"),
+                _make_httpx_response("recovered"),
             ]
         )
         with patch(
@@ -317,7 +315,7 @@ class TestChatWithImage:
                 [{"role": "user", "content": "test"}], "data"
             )
         assert result == "recovered"
-        assert llm_client._client.chat.completions.create.call_count == 2
+        assert llm_client._client.post.call_count == 2
 
     @pytest.mark.asyncio
     async def test_raises_on_no_user_message(self, llm_client: LLMClient) -> None:
@@ -330,14 +328,15 @@ class TestChatWithImage:
     @pytest.mark.asyncio
     async def test_uses_model_override(self, llm_client: LLMClient) -> None:
         """Model parameter overrides self.model."""
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_make_response("ok")
+        llm_client._client.post = AsyncMock(
+            return_value=_make_httpx_response("ok")
         )
         await llm_client.chat_with_image(
             [{"role": "user", "content": "test"}], "data", model="vision-model"
         )
-        call_args = llm_client._client.chat.completions.create.call_args
-        assert call_args.kwargs["model"] == "vision-model"
+        call_args = llm_client._client.post.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert body["model"] == "vision-model"
 
 
 # ---------------------------------------------------------------------------
@@ -351,9 +350,9 @@ class TestChatWithImageStream:
     @pytest.mark.asyncio
     async def test_yields_chunks(self, llm_client: LLMClient) -> None:
         """chat_with_image_stream yields text chunks."""
-        stream_chunks = _make_stream_response(["Hello ", "world", "!"])
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_MockAsyncStream(stream_chunks)
+        stream_chunks = _make_stream_lines(["Hello ", "world", "!"])
+        llm_client._client.stream = MagicMock(
+            return_value=_MockStreamResponse(stream_chunks)
         )
         messages = [{"role": "user", "content": "analyze"}]
         chunks = []
@@ -365,17 +364,18 @@ class TestChatWithImageStream:
     @pytest.mark.asyncio
     async def test_passes_vision_messages(self, llm_client: LLMClient) -> None:
         """Stream request contains vision messages with image_url."""
-        stream_chunks = _make_stream_response(["resp"])
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_MockAsyncStream(stream_chunks)
+        stream_chunks = _make_stream_lines(["resp"])
+        llm_client._client.stream = MagicMock(
+            return_value=_MockStreamResponse(stream_chunks)
         )
         messages = [{"role": "user", "content": "test"}]
         async for _ in llm_client.chat_with_image_stream(messages, "imgdata"):
             pass
 
-        call_args = llm_client._client.chat.completions.create.call_args
-        assert call_args.kwargs["stream"] is True
-        sent_messages = call_args.kwargs["messages"]
+        call_args = llm_client._client.stream.call_args
+        body = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert body["stream"] is True
+        sent_messages = body["messages"]
         last_msg = sent_messages[-1]
         assert isinstance(last_msg["content"], list)
         assert any(c.get("type") == "image_url" for c in last_msg["content"])
@@ -383,9 +383,9 @@ class TestChatWithImageStream:
     @pytest.mark.asyncio
     async def test_empty_stream_produces_no_chunks(self, llm_client: LLMClient) -> None:
         """An empty stream yields nothing without error."""
-        stream_chunks = _make_stream_response([])
-        llm_client._client.chat.completions.create = AsyncMock(
-            return_value=_MockAsyncStream(stream_chunks)
+        stream_chunks = _make_stream_lines([])
+        llm_client._client.stream = MagicMock(
+            return_value=_MockStreamResponse(stream_chunks)
         )
         chunks = []
         async for chunk in llm_client.chat_with_image_stream(

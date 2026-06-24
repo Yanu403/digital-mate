@@ -1,7 +1,10 @@
-"""Async LLM client using OpenAI-compatible API.
+"""Async LLM client using OpenAI-compatible API via httpx.
 
 Provides retry logic with jittered backoff, structured JSON responses,
 and streaming support for real-time token delivery.
+
+Uses httpx instead of the openai package to avoid Rust/maturin build
+dependencies (jiter) that fail on Android/Termux.
 
 Retry strategy adopted from Hermes' jittered_backoff pattern:
 decorrelated exponential backoff with random jitter to prevent
@@ -15,10 +18,11 @@ import asyncio
 import json
 import logging
 import random
+import re
 import time
 from typing import Any, AsyncIterator
 
-from openai import AsyncOpenAI, APIError, APITimeoutError, APIConnectionError
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -86,16 +90,44 @@ class LLMClient:
             timeout: Request timeout in seconds (read timeout for streaming).
             stale_timeout: Seconds without any data before killing a stream.
         """
-        self._client = AsyncOpenAI(
+        self._client = httpx.AsyncClient(
             base_url=base_url,
-            api_key=api_key,
-            timeout=timeout,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=httpx.Timeout(timeout, read=timeout),
         )
         self.model = model
         self.router_model = router_model or model
         self.max_retries = max_retries
         self.timeout = timeout
         self.stale_timeout = stale_timeout
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_content(response_json: dict[str, Any]) -> str:
+        """Extract content from OpenAI-compatible chat response JSON."""
+        choices = response_json.get("choices", [])
+        if not choices:
+            raise LLMError("LLM returned no choices in response.")
+        message = choices[0].get("message", {})
+        content = message.get("content")
+        if not content or not content.strip():
+            raise LLMError("LLM returned empty response.")
+        return content.strip()
+
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Strip markdown code fences from JSON text if present."""
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```$", "", stripped.strip())
+        return stripped
 
     # ------------------------------------------------------------------
     # Non-streaming chat
@@ -123,21 +155,20 @@ class LLMClient:
             LLMError: If the request fails after all retries.
         """
         last_error: Exception | None = None
+        body = {
+            "model": model or self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
 
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.chat.completions.create(
-                    model=model or self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                content = response.choices[0].message.content
-                if not content or not content.strip():
-                    raise LLMError("LLM returned empty response.")
-                return content.strip()
+                response = await self._client.post("/chat/completions", json=body)
+                response.raise_for_status()
+                return self._parse_content(response.json())
 
-            except (APITimeoutError, APIConnectionError) as exc:
+            except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     wait = _jittered_backoff(attempt + 1)
@@ -149,10 +180,27 @@ class LLMClient:
                 else:
                     logger.error("LLM request timed out after %d attempts: %s", self.max_retries, exc)
 
-            except APIError as exc:
+            except httpx.ConnectError as exc:
                 last_error = exc
-                logger.error("LLM API error: %s", exc)
-                raise LLMError(f"AI service error: {exc.message}") from exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM connection failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM connection failed after %d attempts: %s", self.max_retries, exc)
+
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.error("LLM API error: %s (status %d)", exc, exc.response.status_code)
+                raise LLMError(
+                    f"AI service error: HTTP {exc.response.status_code}"
+                ) from exc
+
+            except LLMError:
+                raise
 
             except Exception as exc:
                 last_error = exc
@@ -164,6 +212,35 @@ class LLMClient:
     # ------------------------------------------------------------------
     # Streaming chat
     # ------------------------------------------------------------------
+
+    async def _stream_chunks(
+        self, body: dict[str, Any]
+    ) -> AsyncIterator[str]:
+        """Send a streaming POST and yield content deltas from SSE.
+
+        Parses Server-Sent Events line by line, extracting content
+        from data: JSON chunks and stopping at data: [DONE].
+        """
+        async with self._client.stream(
+            "POST", "/chat/completions", json=body
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == "[DONE]":
+                    return
+                try:
+                    chunk = json.loads(data)
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                except json.JSONDecodeError:
+                    continue
 
     async def chat_stream(
         self,
@@ -193,22 +270,21 @@ class LLMClient:
             LLMError: If the request fails after all retries.
         """
         last_error: Exception | None = None
+        body = {
+            "model": model or self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
 
         for attempt in range(self.max_retries):
             try:
-                stream = await self._client.chat.completions.create(
-                    model=model or self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
-
-                last_chunk_time = time.monotonic()
                 got_any_chunk = False
+                last_chunk_time = time.monotonic()
 
-                async for chunk in stream:
+                async for content in self._stream_chunks(body):
                     now = time.monotonic()
                     # Stale detection: no data for stale_timeout seconds
                     if now - last_chunk_time > self.stale_timeout:
@@ -220,15 +296,12 @@ class LLMClient:
                         raise _StaleStreamError()
 
                     last_chunk_time = now
-
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        got_any_chunk = True
-                        yield chunk.choices[0].delta.content
+                    got_any_chunk = True
+                    yield content
 
                 # Stream completed successfully
                 if not got_any_chunk:
                     logger.warning("Stream completed but produced no content (attempt %d/%d)", attempt + 1, self.max_retries)
-                    # Don't raise — might be an empty-but-valid response
                 return
 
             except _StaleStreamError:
@@ -240,7 +313,7 @@ class LLMClient:
                     await asyncio.sleep(wait)
                 continue
 
-            except (APITimeoutError, APIConnectionError) as exc:
+            except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     wait = _jittered_backoff(attempt + 1)
@@ -252,10 +325,27 @@ class LLMClient:
                 else:
                     logger.error("LLM stream timed out after %d attempts: %s", self.max_retries, exc)
 
-            except APIError as exc:
+            except httpx.ConnectError as exc:
                 last_error = exc
-                logger.error("LLM API error (stream): %s", exc)
-                raise LLMError(f"AI service error: {exc.message}") from exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM stream connection failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM stream connection failed after %d attempts: %s", self.max_retries, exc)
+
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.error("LLM API error (stream): HTTP %d", exc.response.status_code)
+                raise LLMError(
+                    f"AI service error: HTTP {exc.response.status_code}"
+                ) from exc
+
+            except LLMError:
+                raise
 
             except Exception as exc:
                 last_error = exc
@@ -363,21 +453,20 @@ class LLMClient:
             messages, image_base64, image_mime_type
         )
         last_error: Exception | None = None
+        body = {
+            "model": model or self.model,
+            "messages": vision_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
 
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.chat.completions.create(
-                    model=model or self.model,
-                    messages=vision_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                content = response.choices[0].message.content
-                if not content or not content.strip():
-                    raise LLMError("LLM returned empty response.")
-                return content.strip()
+                response = await self._client.post("/chat/completions", json=body)
+                response.raise_for_status()
+                return self._parse_content(response.json())
 
-            except (APITimeoutError, APIConnectionError) as exc:
+            except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     wait = _jittered_backoff(attempt + 1)
@@ -389,10 +478,24 @@ class LLMClient:
                 else:
                     logger.error("LLM vision request timed out after %d attempts: %s", self.max_retries, exc)
 
-            except APIError as exc:
+            except httpx.ConnectError as exc:
                 last_error = exc
-                logger.error("LLM API error (vision): %s", exc)
-                raise LLMError(f"AI service error: {exc.message}") from exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM vision connection failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM vision connection failed after %d attempts: %s", self.max_retries, exc)
+
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.error("LLM API error (vision): HTTP %d", exc.response.status_code)
+                raise LLMError(
+                    f"AI service error: HTTP {exc.response.status_code}"
+                ) from exc
 
             except LLMError:
                 raise
@@ -437,22 +540,21 @@ class LLMClient:
             messages, image_base64, image_mime_type
         )
         last_error: Exception | None = None
+        body = {
+            "model": model or self.model,
+            "messages": vision_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
 
         for attempt in range(self.max_retries):
             try:
-                stream = await self._client.chat.completions.create(
-                    model=model or self.model,
-                    messages=vision_messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
-
-                last_chunk_time = time.monotonic()
                 got_any_chunk = False
+                last_chunk_time = time.monotonic()
 
-                async for chunk in stream:
+                async for content in self._stream_chunks(body):
                     now = time.monotonic()
                     if now - last_chunk_time > self.stale_timeout:
                         logger.warning(
@@ -463,10 +565,8 @@ class LLMClient:
                         raise _StaleStreamError()
 
                     last_chunk_time = now
-
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        got_any_chunk = True
-                        yield chunk.choices[0].delta.content
+                    got_any_chunk = True
+                    yield content
 
                 if not got_any_chunk:
                     logger.warning("Vision stream completed but produced no content (attempt %d/%d)", attempt + 1, self.max_retries)
@@ -480,7 +580,7 @@ class LLMClient:
                     await asyncio.sleep(wait)
                 continue
 
-            except (APITimeoutError, APIConnectionError) as exc:
+            except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     wait = _jittered_backoff(attempt + 1)
@@ -492,10 +592,27 @@ class LLMClient:
                 else:
                     logger.error("LLM vision stream timed out after %d attempts: %s", self.max_retries, exc)
 
-            except APIError as exc:
+            except httpx.ConnectError as exc:
                 last_error = exc
-                logger.error("LLM API error (vision stream): %s", exc)
-                raise LLMError(f"AI service error: {exc.message}") from exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM vision stream connection failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM vision stream connection failed after %d attempts: %s", self.max_retries, exc)
+
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.error("LLM API error (vision stream): HTTP %d", exc.response.status_code)
+                raise LLMError(
+                    f"AI service error: HTTP {exc.response.status_code}"
+                ) from exc
+
+            except LLMError:
+                raise
 
             except Exception as exc:
                 last_error = exc
@@ -533,28 +650,22 @@ class LLMClient:
         """
         last_error: Exception | None = None
         use_model = model or self.router_model
+        body = {
+            "model": use_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
 
         for attempt in range(self.max_retries):
             try:
-                response = await self._client.chat.completions.create(
-                    model=use_model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    response_format={"type": "json_object"},
-                )
-                content = response.choices[0].message.content
-                if not content or not content.strip():
-                    raise LLMError("LLM returned empty JSON response.")
+                response = await self._client.post("/chat/completions", json=body)
+                response.raise_for_status()
+                content = self._parse_content(response.json())
 
                 try:
-                    # Strip markdown code fences if present (some providers
-                    # wrap JSON in ```json ... ``` despite response_format)
-                    stripped = content.strip()
-                    if stripped.startswith("```"):
-                        import re
-                        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-                        stripped = re.sub(r"\s*```$", "", stripped.strip())
+                    stripped = self._strip_code_fences(content)
                     parsed = json.loads(stripped)
                 except json.JSONDecodeError as exc:
                     last_error = exc
@@ -569,7 +680,7 @@ class LLMClient:
                 logger.debug("LLM JSON response: %.200s", content)
                 return parsed
 
-            except (APITimeoutError, APIConnectionError) as exc:
+            except httpx.TimeoutException as exc:
                 last_error = exc
                 if attempt < self.max_retries - 1:
                     wait = _jittered_backoff(attempt + 1)
@@ -581,10 +692,24 @@ class LLMClient:
                 else:
                     logger.error("LLM JSON request timed out after %d attempts: %s", self.max_retries, exc)
 
-            except APIError as exc:
+            except httpx.ConnectError as exc:
                 last_error = exc
-                logger.error("LLM API error (JSON): %s", exc)
-                raise LLMError(f"AI service error: {exc.message}") from exc
+                if attempt < self.max_retries - 1:
+                    wait = _jittered_backoff(attempt + 1)
+                    logger.warning(
+                        "LLM JSON connection failed (attempt %d/%d): %s — retrying in %.1fs",
+                        attempt + 1, self.max_retries, exc, wait,
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error("LLM JSON connection failed after %d attempts: %s", self.max_retries, exc)
+
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                logger.error("LLM API error (JSON): HTTP %d", exc.response.status_code)
+                raise LLMError(
+                    f"AI service error: HTTP {exc.response.status_code}"
+                ) from exc
 
             except LLMError:
                 raise
